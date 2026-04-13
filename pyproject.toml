@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tg-broadcast-bot"
+name = "bot"
 version = "1.0.0"
 description = "Production-ready Telegram broadcast bot with multi-session support"
 requires-python = ">=3.11"
