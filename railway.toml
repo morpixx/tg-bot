@@ -1,0 +1,10 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "docker/Dockerfile"
+
+[deploy]
+startCommand = "python -m bot"
+# Runs BEFORE the service starts on every deploy — perfect for migrations
+preDeployCommand = "alembic upgrade head"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

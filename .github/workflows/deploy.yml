@@ -1,0 +1,28 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/tg-bot
+            git pull origin main
+            docker compose build --pull
+            docker compose up -d --remove-orphans
+            # Run migrations
+            docker compose run --rm migrate
+            # Clean up old images
+            docker image prune -f
+            echo "Deploy complete at $(date)"

@@ -1,0 +1,21 @@
+# Dev overrides: mount source for hot reload, expose ports
+version: "3.9"
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  bot:
+    volumes:
+      - .:/app
+    command: python -m bot
+
+  worker:
+    volumes:
+      - .:/app
+    command: python -m worker
