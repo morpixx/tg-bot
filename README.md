@@ -207,6 +207,49 @@ services/
   session_auth.py   QRLoginSession + PhoneLoginSession
 ```
 
+## Deploy to Railway
+
+Railway runs two services (`bot` + `worker`) from the same repo. Postgres is in the same environment; Redis goes in a separate environment (free-plan limit).
+
+### Step-by-step
+
+**1. Fork / push the repo to GitHub.**
+
+**2. Create a Railway project → Add PostgreSQL plugin.**
+Railway auto-injects `DATABASE_URL` — you don't set it manually.
+
+**3. Add the "bot" service from your GitHub repo.**
+- Settings → Config Path: `railway.toml` (default)
+- Add the variables below.
+
+**4. Add the "worker" service from the same repo.**
+- Settings → Config Path: `railway.worker.toml`
+- Share the same variables (Railway "Shared Variables" or copy them).
+
+**5. Set these variables on both services:**
+
+| Variable | Value |
+|---|---|
+| `BOT_TOKEN` | your bot token |
+| `OWNER_ID` | your Telegram user ID |
+| `TELETHON_API_ID` | from my.telegram.org/apps |
+| `TELETHON_API_HASH` | from my.telegram.org/apps |
+| `ENCRYPTION_KEY` | generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `REQUIRED_CHANNEL_IDS` | comma-separated IDs, or leave empty |
+| `REDIS_URL` | from your Redis environment (see below) |
+| `DATABASE_URL` | **do not set** — injected by Postgres plugin |
+
+**6. Redis (separate environment on free plan):**
+- Create a new Railway environment (or a second project).
+- Add the Redis plugin → copy the `REDIS_URL` value.
+- Paste it as a variable in the main environment for both services.
+
+**How migrations work:**
+`railway.toml` sets `preDeployCommand = "python scripts/migrate.py"`.
+The script waits up to 60 s for Postgres to accept connections, then runs `alembic upgrade head`. This solves the "DB not ready" race condition that plain `alembic upgrade head` hits.
+
+---
+
 ## CI/CD
 
 GitHub Actions:

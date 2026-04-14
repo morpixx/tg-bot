@@ -1,10 +1,20 @@
+# ── Bot service ──────────────────────────────────────────────────────────────
+# Railway picks this file automatically for the "bot" service.
+# In Railway UI: Settings → Config Path → railway.toml
+
 [build]
 builder = "dockerfile"
 dockerfilePath = "docker/Dockerfile"
 
 [deploy]
+# Wait for Postgres to accept connections, then migrate, then start the bot.
+preDeployCommand = "python scripts/migrate.py"
 startCommand = "python -m bot"
-# Runs BEFORE the service starts on every deploy — perfect for migrations
-preDeployCommand = "alembic upgrade head"
 restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
+restartPolicyMaxRetries = 10
+
+[deploy.healthcheck]
+# Railway will wait up to 300 s for the bot process to stay alive before
+# marking the deploy as healthy.
+type = "tcp"
+timeoutSeconds = 300

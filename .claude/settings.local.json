@@ -8,7 +8,9 @@
       "Bash(grep -c \"async def test_\\\\|def test_\" /c/tg-bot/tests/unit/*.py /c/tg-bot/tests/integration/*.py)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m ':*)"
+      "Bash(git commit -m ':*)",
+      "Bash(npx add-mcp:*)",
+      "Skill(update-config)"
     ]
   }
 }

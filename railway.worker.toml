@@ -1,0 +1,14 @@
+# ── Worker service ────────────────────────────────────────────────────────────
+# In Railway UI when adding the second service:
+#   Settings → Config Path → railway.worker.toml
+#
+# The worker does NOT run migrations (that's the bot's job via preDeployCommand).
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "docker/Dockerfile"
+
+[deploy]
+startCommand = "python -m worker"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
