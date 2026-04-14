@@ -50,6 +50,12 @@ class BroadcastStatus(str, enum.Enum):
     SKIPPED = "skipped"
 
 
+# SQLAlchemy native PostgreSQL enums use .name (uppercase) by default.
+# Use values_callable so the stored value matches the migration (lowercase).
+def _enum_values(obj: type[enum.Enum]) -> list[str]:
+    return [e.value for e in obj]
+
+
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -65,6 +71,7 @@ class User(Base):
     posts: Mapped[list[Post]] = relationship(back_populates="user", cascade="all, delete-orphan")
     target_chats: Mapped[list[TargetChat]] = relationship(back_populates="user", cascade="all, delete-orphan")
     campaigns: Mapped[list[Campaign]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    global_settings: Mapped[UserSettings | None] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class TelegramSession(Base):
@@ -94,7 +101,7 @@ class Post(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(256))
-    type: Mapped[PostType] = mapped_column(Enum(PostType))
+    type: Mapped[PostType] = mapped_column(Enum(PostType, values_callable=_enum_values))
 
     # For forwarded posts
     source_chat_id: Mapped[int | None] = mapped_column(BigInteger)
@@ -136,7 +143,7 @@ class Campaign(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_id", ondelete="CASCADE"))
     post_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("posts.id", ondelete="RESTRICT"))
     name: Mapped[str] = mapped_column(String(256))
-    status: Mapped[CampaignStatus] = mapped_column(Enum(CampaignStatus), default=CampaignStatus.DRAFT)
+    status: Mapped[CampaignStatus] = mapped_column(Enum(CampaignStatus, values_callable=_enum_values), default=CampaignStatus.DRAFT)
     current_cycle: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -221,9 +228,26 @@ class BroadcastLog(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger)
     cycle: Mapped[int] = mapped_column(Integer, default=1)
     message_id: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[BroadcastStatus] = mapped_column(Enum(BroadcastStatus))
+    status: Mapped[BroadcastStatus] = mapped_column(Enum(BroadcastStatus, values_callable=_enum_values))
     error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     campaign: Mapped[Campaign] = relationship(back_populates="broadcast_logs")
     session: Mapped[TelegramSession] = relationship(back_populates="broadcast_logs")
+
+
+class UserSettings(Base):
+    """Global default campaign settings per user."""
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.tg_id", ondelete="CASCADE"), primary_key=True)
+    delay_between_chats: Mapped[int] = mapped_column(Integer, default=5)
+    randomize_delay: Mapped[bool] = mapped_column(Boolean, default=False)
+    randomize_min: Mapped[int] = mapped_column(Integer, default=3)
+    randomize_max: Mapped[int] = mapped_column(Integer, default=10)
+    shuffle_after_cycle: Mapped[bool] = mapped_column(Boolean, default=False)
+    delay_between_cycles: Mapped[int] = mapped_column(Integer, default=60)
+    max_cycles: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    forward_mode: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    user: Mapped[User] = relationship(back_populates="global_settings")

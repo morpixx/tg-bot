@@ -124,7 +124,7 @@ async def fsm_qr_name(message: Message, state: FSMContext, db_user: User) -> Non
         caption=(
             "📷 <b>Отсканируй QR-код</b>\n\n"
             "Открой Telegram → <b>Настройки</b> → <b>Устройства</b> → <b>Подключить устройство</b>\n\n"
-            "QR-код действителен 30 секунд."
+            "QR-код действителен 1 минуту."
         ),
         reply_markup=kb,
     )

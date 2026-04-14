@@ -61,10 +61,11 @@ class CampaignRepository:
         user_id: int,
         name: str,
         post_id: uuid.UUID,
+        defaults: dict[str, object] | None = None,
     ) -> Campaign:
         campaign = Campaign(user_id=user_id, name=name, post_id=post_id)
-        # Create default settings
-        settings = CampaignSettings(campaign=campaign)
+        settings_kwargs = defaults or {}
+        settings = CampaignSettings(campaign=campaign, **settings_kwargs)
         self._session.add(campaign)
         self._session.add(settings)
         await self._session.flush()

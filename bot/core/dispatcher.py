@@ -4,7 +4,7 @@ from aiogram import Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
 
 from bot.core.config import settings
-from bot.handlers import admin, campaigns, chats, posts, sessions, start, stats
+from bot.handlers import admin, campaigns, chats, posts, sessions, settings, start, stats
 from bot.middlewares.subscription import SubscriptionMiddleware
 from bot.middlewares.user import UserMiddleware
 
@@ -28,6 +28,7 @@ def create_dispatcher() -> Dispatcher:
     dp.include_router(posts.router)
     dp.include_router(chats.router)
     dp.include_router(campaigns.router)
+    dp.include_router(settings.router)
     dp.include_router(stats.router)
 
     return dp

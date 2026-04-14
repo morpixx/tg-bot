@@ -47,5 +47,9 @@ class CampaignSettingsEdit(StatesGroup):
     waiting_value = State()
 
 
+class GlobalSettingsEdit(StatesGroup):
+    waiting_value = State()
+
+
 class AdminNotify(StatesGroup):
     waiting_message = State()   # message to broadcast to all users

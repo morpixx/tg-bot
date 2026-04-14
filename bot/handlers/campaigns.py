@@ -21,6 +21,7 @@ from db.repositories.campaign_repo import CampaignRepository
 from db.repositories.chat_repo import ChatRepository
 from db.repositories.post_repo import PostRepository
 from db.repositories.session_repo import SessionRepository
+from db.repositories.user_settings_repo import UserSettingsRepository
 from db.session import async_session_factory
 
 router = Router()
@@ -236,10 +237,23 @@ async def fsm_chats_done(callback: CallbackQuery, state: FSMContext, db_user: Us
     async with async_session_factory() as session:
         async with session.begin():
             repo = CampaignRepository(session)
+            gs_repo = UserSettingsRepository(session)
+            gs = await gs_repo.get_or_create(db_user.tg_id)
+            defaults = {
+                "delay_between_chats": gs.delay_between_chats,
+                "randomize_delay": gs.randomize_delay,
+                "randomize_min": gs.randomize_min,
+                "randomize_max": gs.randomize_max,
+                "shuffle_after_cycle": gs.shuffle_after_cycle,
+                "delay_between_cycles": gs.delay_between_cycles,
+                "max_cycles": gs.max_cycles,
+                "forward_mode": gs.forward_mode,
+            }
             campaign = await repo.create(
                 user_id=db_user.tg_id,
                 name=data["campaign_name"],
                 post_id=uuid.UUID(data["post_id"]),
+                defaults=defaults,
             )
             # Set sessions (default offset=0)
             await repo.set_sessions(
