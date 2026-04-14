@@ -34,6 +34,11 @@ def _make_client(string_session: str = "") -> TelegramClient:
         StringSession(string_session),
         settings.telethon_api_id,
         settings.telethon_api_hash,
+        device_model="iPhone 14 Pro Max",
+        system_version="16.0",
+        app_version="9.6.3",
+        lang_code="ru",
+        system_lang_code="ru-RU",
     )
 
 

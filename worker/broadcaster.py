@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import uuid
-from datetime import datetime, timezone
 
 import structlog
 from telethon import TelegramClient
@@ -12,8 +12,9 @@ from telethon.errors import (
     FloodWaitError,
     UserBannedInChannelError,
 )
+from telethon.tl.types import MessageEntity
 
-from db.models import BroadcastStatus, Campaign, CampaignStatus, Post, PostType
+from db.models import BroadcastLog, BroadcastStatus, Campaign, CampaignStatus, Post, PostType
 from db.repositories.campaign_repo import CampaignRepository
 from db.session import async_session_factory
 from worker.session_pool import SessionPool
@@ -22,7 +23,7 @@ log = structlog.get_logger()
 
 # Per-campaign stop signals
 _stop_signals: dict[uuid.UUID, bool] = {}
-# Live progress callbacks: campaign_id -> (sent, total)
+# Live progress: campaign_id -> (sent, total)
 _progress: dict[uuid.UUID, tuple[int, int]] = {}
 
 
@@ -77,7 +78,7 @@ class Broadcaster:
             sent = 0
             _progress[campaign_id] = (0, total)
 
-            # For each chat, schedule sends per session (with offsets)
+            # Run all sessions in parallel (staggered by offset)
             tasks = []
             for tg_session, offset in sessions_map.values():
                 tasks.append(self._broadcast_session(
@@ -85,12 +86,10 @@ class Broadcaster:
                     tg_session=tg_session,
                     chats=chats,
                     offset_seconds=offset,
-                    on_sent=lambda: None,  # progress tracked below
                 ))
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Count successes across all session results
             for r in results:
                 if isinstance(r, int):
                     sent += r
@@ -103,7 +102,6 @@ class Broadcaster:
                     repo = CampaignRepository(session)
                     await repo.increment_cycle(campaign_id)
 
-                    # Check max_cycles
                     updated = await repo.get(campaign_id)
                     if updated and cfg.max_cycles and updated.current_cycle >= cfg.max_cycles:
                         await repo.update_status(campaign_id, CampaignStatus.COMPLETED)
@@ -111,7 +109,6 @@ class Broadcaster:
                         _progress.pop(campaign_id, None)
                         return
 
-            # Delay between cycles
             delay = cfg.delay_between_cycles
             if cfg.cycle_delay_randomize:
                 delay = random.randint(cfg.cycle_delay_min, cfg.cycle_delay_max)
@@ -126,7 +123,6 @@ class Broadcaster:
         tg_session,  # type: ignore[no-untyped-def]
         chats: list,
         offset_seconds: int,
-        on_sent,  # type: ignore[no-untyped-def]
     ) -> int:
         """Broadcast to all chats using one session. Returns sent count."""
         if offset_seconds > 0:
@@ -138,56 +134,91 @@ class Broadcaster:
             return 0
 
         cfg = campaign.settings
-        sent = 0
 
-        for chat in chats:
+        # Pre-fetch source message once if needed (copy mode)
+        cached_source_msg = None
+        if campaign.post.type == PostType.FORWARDED and not cfg.forward_mode:
+            try:
+                cached_source_msg = await client.get_messages(
+                    campaign.post.source_chat_id,
+                    ids=campaign.post.source_message_id,
+                )
+            except Exception as e:
+                log.error("Cannot fetch source message", error=str(e))
+                return 0
+
+        sent = 0
+        pending_logs: list[BroadcastLog] = []
+        is_paused = False  # track pause state to avoid unnecessary DB hits
+
+        for i, chat in enumerate(chats):
             if _stop_signals.get(campaign.id):
                 break
 
-            # Check paused
-            async with async_session_factory() as session:
-                repo = CampaignRepository(session)
-                c = await repo.get(campaign.id)
-                if c and c.status == CampaignStatus.PAUSED:
-                    while True:
-                        await asyncio.sleep(3)
-                        async with async_session_factory() as s2:
-                            r2 = CampaignRepository(s2)
-                            c2 = await r2.get(campaign.id)
-                        if not c2 or c2.status != CampaignStatus.PAUSED:
-                            break
+            # Poll DB for pause only: when we know we're paused, or every 5 chats
+            if is_paused or i % 5 == 0:
+                async with async_session_factory() as s:
+                    c = await CampaignRepository(s).get(campaign.id)
+                db_status = c.status if c else None
+
+                if db_status == CampaignStatus.PAUSED:
+                    if not is_paused:
+                        log.info("Campaign paused, waiting...", campaign_id=str(campaign.id))
+                        is_paused = True
+                    await asyncio.sleep(3)
+                    continue  # re-check on next loop iteration
+                else:
+                    is_paused = False
+
+            if _stop_signals.get(campaign.id):
+                break
 
             status, message_id, error = await self._send_post(
                 client=client,
                 post=campaign.post,
                 chat_id=chat.chat_id,
                 forward_mode=cfg.forward_mode,
+                cached_source_msg=cached_source_msg,
             )
 
-            # Log result
-            async with async_session_factory() as session:
-                async with session.begin():
-                    from db.models import BroadcastLog
-                    session.add(BroadcastLog(
-                        campaign_id=campaign.id,
-                        session_id=tg_session.id,
-                        chat_id=chat.chat_id,
-                        cycle=campaign.current_cycle + 1,
-                        message_id=message_id,
-                        status=status,
-                        error=error,
-                    ))
+            pending_logs.append(BroadcastLog(
+                campaign_id=campaign.id,
+                session_id=tg_session.id,
+                chat_id=chat.chat_id,
+                cycle=campaign.current_cycle + 1,
+                message_id=message_id,
+                status=status,
+                error=error,
+            ))
+
+            # Flush logs every 10 chats to avoid holding too much in memory
+            if len(pending_logs) >= 10:
+                await self._flush_logs(pending_logs)
+                pending_logs.clear()
 
             if status == BroadcastStatus.SUCCESS:
                 sent += 1
 
-            # Delay between chats
             delay = cfg.delay_between_chats
             if cfg.randomize_delay:
                 delay = random.randint(cfg.randomize_min, cfg.randomize_max)
             await asyncio.sleep(delay)
 
+        # Flush remaining logs
+        if pending_logs:
+            await self._flush_logs(pending_logs)
+
         return sent
+
+    @staticmethod
+    async def _flush_logs(logs: list[BroadcastLog]) -> None:
+        """Batch-write broadcast logs to DB."""
+        try:
+            async with async_session_factory() as session:
+                async with session.begin():
+                    session.add_all(logs)
+        except Exception as e:
+            log.error("Failed to flush broadcast logs", error=str(e))
 
     async def _send_post(
         self,
@@ -195,6 +226,7 @@ class Broadcaster:
         post: Post,
         chat_id: int,
         forward_mode: bool,
+        cached_source_msg=None,  # type: ignore[no-untyped-def]
     ) -> tuple[BroadcastStatus, int | None, str | None]:
         try:
             if post.type == PostType.FORWARDED and forward_mode:
@@ -204,9 +236,9 @@ class Broadcaster:
                     from_peer=post.source_chat_id,
                 )
                 msg_id = result[0].id if result else None
+
             elif post.type == PostType.FORWARDED and not forward_mode:
-                # Copy without attribution
-                msg = await client.get_messages(post.source_chat_id, ids=post.source_message_id)
+                msg = cached_source_msg
                 if not msg:
                     return BroadcastStatus.SKIPPED, None, "Source message not found"
                 result = await client.send_message(
@@ -216,13 +248,9 @@ class Broadcaster:
                     formatting_entities=msg.entities,
                 )
                 msg_id = result.id
+
             elif post.type in (PostType.PHOTO, PostType.VIDEO, PostType.DOCUMENT):
-                import json
-                entities = None
-                if post.text_entities:
-                    from telethon.tl.types import MessageEntity
-                    raw = json.loads(post.text_entities)
-                    entities = [MessageEntity(**e) for e in raw] if raw else None
+                entities = _parse_entities(post.text_entities)
                 result = await client.send_file(
                     entity=chat_id,
                     file=post.media_file_id,
@@ -230,14 +258,10 @@ class Broadcaster:
                     formatting_entities=entities,
                 )
                 msg_id = result.id
+
             else:
-                # Text
-                import json
-                entities = None
-                if post.text_entities:
-                    from telethon.tl.types import MessageEntity
-                    raw = json.loads(post.text_entities)
-                    entities = [MessageEntity(**e) for e in raw] if raw else None
+                # Text post
+                entities = _parse_entities(post.text_entities)
                 result = await client.send_message(
                     entity=chat_id,
                     message=post.text or "",
@@ -259,3 +283,10 @@ class Broadcaster:
         except Exception as e:
             log.error("Send error", chat_id=chat_id, error=str(e))
             return BroadcastStatus.FAILED, None, str(e)
+
+
+def _parse_entities(text_entities: str | None) -> list[MessageEntity] | None:
+    if not text_entities:
+        return None
+    raw = json.loads(text_entities)
+    return [MessageEntity(**e) for e in raw] if raw else None

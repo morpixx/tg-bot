@@ -75,17 +75,16 @@ class WorkerScheduler:
             log.info("Campaign task finished", campaign_id=str(campaign_id))
 
     async def _health_check_sessions(self) -> None:
-        """Check all active sessions are still valid."""
+        """Check all active sessions are still valid (runs in parallel)."""
         from bot.core.bot import bot
         async with async_session_factory() as session:
             repo = SessionRepository(session)
             sessions = await repo.get_all_active()
 
-        for tg_session in sessions:
+        async def _check_one(tg_session) -> None:  # type: ignore[no-untyped-def]
             alive = await self._pool.health_check(tg_session)
             if not alive:
                 log.warning("Session dead", session_id=str(tg_session.id), name=tg_session.name)
-                # Notify owner
                 try:
                     await bot.send_message(
                         tg_session.user_id,
@@ -93,11 +92,13 @@ class WorkerScheduler:
                     )
                 except Exception:
                     pass
-                # Mark as inactive
                 async with async_session_factory() as db_session:
                     async with db_session.begin():
                         repo2 = SessionRepository(db_session)
                         await repo2.update(tg_session.id, is_active=False)
+
+        if sessions:
+            await asyncio.gather(*[_check_one(s) for s in sessions], return_exceptions=True)
 
     async def shutdown(self) -> None:
         self._scheduler.shutdown()
