@@ -180,14 +180,32 @@ async def cb_chat_view(callback: CallbackQuery) -> None:
         f"Username: {username_line}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"chat:delete:{chat_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"chat:delete:confirm_ask:{chat_id}")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:chats")],
     ])
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("chat:delete:"))
+@router.callback_query(F.data.startswith("chat:delete:confirm_ask:"))
+async def cb_chat_delete_ask(callback: CallbackQuery) -> None:
+    assert callback.message and callback.data
+    chat_id = callback.data.split(":", 3)[3]
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Удалить", callback_data=f"chat:delete:{chat_id}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"chat:view:{chat_id}"),
+        ]
+    ])
+    await callback.message.edit_text(
+        "🗑 <b>Удалить чат из списка?</b>\n\nОн будет убран из всех кампаний.",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("chat:delete:") & ~F.data.startswith("chat:delete:confirm_ask:"))
 async def cb_chat_delete(callback: CallbackQuery) -> None:
     assert callback.message and callback.data
     chat_id = callback.data.split(":", 2)[2]

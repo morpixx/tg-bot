@@ -11,10 +11,11 @@ def main_menu_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📝 Посты", callback_data="menu:posts"),
             ],
             [
+                InlineKeyboardButton(text="💬 Чаты", callback_data="menu:chats"),
                 InlineKeyboardButton(text="📢 Кампании", callback_data="menu:campaigns"),
-                InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
             ],
             [
+                InlineKeyboardButton(text="📊 Статистика", callback_data="menu:stats"),
                 InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
             ],
         ]

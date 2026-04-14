@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.keyboards.posts_kb import (
     post_add_type_kb,
+    post_delete_confirm_kb,
     post_manual_type_kb,
     post_view_kb,
     posts_list_kb,
@@ -226,7 +227,18 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
 
 # ── Delete post ───────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("post:delete:"))
+@router.callback_query(F.data.startswith("post:delete:confirm_ask:"))
+async def cb_post_delete_ask(callback: CallbackQuery) -> None:
+    assert callback.message and callback.data
+    post_id = callback.data.split(":", 3)[3]
+    await callback.message.edit_text(
+        "🗑 <b>Удалить пост?</b>\n\nКампании, использующие этот пост, продолжат работу, но пост из библиотеки исчезнет.",
+        reply_markup=post_delete_confirm_kb(post_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("post:delete:") & ~F.data.startswith("post:delete:confirm_ask:"))
 async def cb_post_delete(callback: CallbackQuery) -> None:
     assert callback.message and callback.data
     post_id = callback.data.split(":", 2)[2]

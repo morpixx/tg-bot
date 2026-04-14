@@ -45,7 +45,18 @@ def post_manual_type_kb() -> InlineKeyboardMarkup:
 def post_view_kb(post_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"post:delete:{post_id}")],
+            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"post:delete:confirm_ask:{post_id}")],
             [back_button("menu:posts")],
+        ]
+    )
+
+
+def post_delete_confirm_kb(post_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Удалить", callback_data=f"post:delete:{post_id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data=f"post:view:{post_id}"),
+            ]
         ]
     )
