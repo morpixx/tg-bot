@@ -3,7 +3,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.keyboards.utils import back_button
-from db.models import Campaign, CampaignSettings, CampaignStatus
+from db.models import Campaign, CampaignSession, CampaignSettings, CampaignStatus
 
 _STATUS_EMOJI = {
     CampaignStatus.DRAFT: "📋",
@@ -55,48 +55,90 @@ def campaign_view_kb(campaign_id: str, status: CampaignStatus) -> InlineKeyboard
         rows.append([InlineKeyboardButton(text="🔄 Перезапустить", callback_data=f"campaign:restart:{campaign_id}")])
         rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"campaign:settings:{campaign_id}")])
 
-    rows.append([InlineKeyboardButton(text="📈 Статистика", callback_data=f"campaign:stats:{campaign_id}")])
+    rows.append([
+        InlineKeyboardButton(text="📈 Статистика", callback_data=f"campaign:stats:{campaign_id}"),
+        InlineKeyboardButton(text="⏱ Офсеты", callback_data=f"campaign:offsets:{campaign_id}"),
+    ])
     rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"campaign:delete:{campaign_id}")])
     rows.append([back_button("menu:campaigns")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def campaign_settings_kb(campaign_id: str, cfg: CampaignSettings) -> InlineKeyboardMarkup:
-    """Keyboard showing current values; booleans toggle inline."""
-    rand = "✅ Рандом" if cfg.randomize_delay else "❌ Рандом"
-    rand += f" ({cfg.randomize_min}–{cfg.randomize_max} с)"
-    shuffle = "✅ Перемешивать" if cfg.shuffle_after_cycle else "❌ Перемешивать"
+    """Shows current values; booleans toggle inline."""
+    rand = f"{'✅' if cfg.randomize_delay else '❌'} Рандом задержки чатов"
+    shuffle = f"{'✅' if cfg.shuffle_after_cycle else '❌'} Перемешивать список"
     mode = "📤 Форвард" if cfg.forward_mode else "📋 Копия"
     max_c = str(cfg.max_cycles) if cfg.max_cycles else "∞"
+    cycle_rand = f"{'✅' if cfg.cycle_delay_randomize else '❌'} Рандом между циклами"
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"⏱ Задержка: {cfg.delay_between_chats} с",
-                callback_data=f"csetting:delay_between_chats:{campaign_id}",
-            )],
-            [InlineKeyboardButton(text=rand, callback_data=f"csetting:randomize_delay:{campaign_id}")],
-            [InlineKeyboardButton(
-                text=f"⏱ Рандом мин: {cfg.randomize_min} с",
-                callback_data=f"csetting:randomize_min:{campaign_id}",
-            )],
-            [InlineKeyboardButton(
-                text=f"⏱ Рандом макс: {cfg.randomize_max} с",
-                callback_data=f"csetting:randomize_max:{campaign_id}",
-            )],
-            [InlineKeyboardButton(text=shuffle, callback_data=f"csetting:shuffle_after_cycle:{campaign_id}")],
-            [InlineKeyboardButton(
-                text=f"🔄 Между циклами: {cfg.delay_between_cycles} с",
-                callback_data=f"csetting:delay_between_cycles:{campaign_id}",
-            )],
-            [InlineKeyboardButton(
-                text=f"🔁 Макс. циклов: {max_c}",
-                callback_data=f"csetting:max_cycles:{campaign_id}",
-            )],
-            [InlineKeyboardButton(text=mode, callback_data=f"csetting:forward_mode:{campaign_id}")],
-            [back_button(f"campaign:view:{campaign_id}")],
-        ]
-    )
+    rows = [
+        # ── Задержка между чатами ──
+        [InlineKeyboardButton(
+            text=f"⏱ Задержка: {cfg.delay_between_chats} с",
+            callback_data=f"csetting:delay_between_chats:{campaign_id}",
+        )],
+        [InlineKeyboardButton(text=rand, callback_data=f"csetting:randomize_delay:{campaign_id}")],
+    ]
+
+    if cfg.randomize_delay:
+        rows.append([InlineKeyboardButton(
+            text=f"   ↳ мин: {cfg.randomize_min} с",
+            callback_data=f"csetting:randomize_min:{campaign_id}",
+        )])
+        rows.append([InlineKeyboardButton(
+            text=f"   ↳ макс: {cfg.randomize_max} с",
+            callback_data=f"csetting:randomize_max:{campaign_id}",
+        )])
+
+    rows += [
+        # ── Задержка между циклами ──
+        [InlineKeyboardButton(
+            text=f"🔄 Между циклами: {cfg.delay_between_cycles} с",
+            callback_data=f"csetting:delay_between_cycles:{campaign_id}",
+        )],
+        [InlineKeyboardButton(text=cycle_rand, callback_data=f"csetting:cycle_delay_randomize:{campaign_id}")],
+    ]
+
+    if cfg.cycle_delay_randomize:
+        rows.append([InlineKeyboardButton(
+            text=f"   ↳ мин: {cfg.cycle_delay_min} с",
+            callback_data=f"csetting:cycle_delay_min:{campaign_id}",
+        )])
+        rows.append([InlineKeyboardButton(
+            text=f"   ↳ макс: {cfg.cycle_delay_max} с",
+            callback_data=f"csetting:cycle_delay_max:{campaign_id}",
+        )])
+
+    rows += [
+        [InlineKeyboardButton(text=shuffle, callback_data=f"csetting:shuffle_after_cycle:{campaign_id}")],
+        [InlineKeyboardButton(
+            text=f"🔁 Макс. циклов: {max_c}",
+            callback_data=f"csetting:max_cycles:{campaign_id}",
+        )],
+        [InlineKeyboardButton(text=mode, callback_data=f"csetting:forward_mode:{campaign_id}")],
+        [back_button(f"campaign:view:{campaign_id}")],
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def session_offsets_kb(
+    campaign_id: str,
+    campaign_sessions: list[CampaignSession],
+) -> InlineKeyboardMarkup:
+    """Shows each session with its current offset; click to edit."""
+    rows = []
+    for cs in campaign_sessions:
+        name = cs.session.name if cs.session else "—"
+        premium = " 💎" if cs.session and cs.session.has_premium else ""
+        offset_label = f"{cs.delay_offset_seconds} с" if cs.delay_offset_seconds else "сразу"
+        rows.append([InlineKeyboardButton(
+            text=f"📱 {name}{premium}  →  ⏱ {offset_label}",
+            callback_data=f"campaign:offset:edit:{campaign_id}:{cs.session_id}",
+        )])
+    rows.append([back_button(f"campaign:view:{campaign_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def session_select_kb(sessions: list, selected_ids: set[str]) -> InlineKeyboardMarkup:

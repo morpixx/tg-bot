@@ -51,8 +51,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    volumes:
-      - sessions_data:/app/sessions
 
   worker:
     build:
@@ -68,10 +66,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    volumes:
-      - sessions_data:/app/sessions
 
 volumes:
   postgres_data:
   redis_data:
-  sessions_data:

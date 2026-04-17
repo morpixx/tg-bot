@@ -12,9 +12,11 @@ class Settings(BaseSettings):
     owner_id: int
     required_channel_ids: list[int] = []
 
-    # Telethon
-    telethon_api_id: int
-    telethon_api_hash: str
+    # Telethon credentials — kept for backwards compatibility but no longer used
+    # at runtime: opentele2 uses official iOS API credentials internally.
+    # Safe to omit from Railway variables.
+    telethon_api_id: int = 0
+    telethon_api_hash: str = ""
 
     # Encryption
     encryption_key: str

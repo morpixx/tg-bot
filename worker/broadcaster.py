@@ -6,13 +6,13 @@ import random
 import uuid
 
 import structlog
-from telethon import TelegramClient
+from opentele2.tl import TelegramClient
+from telethon import tl
 from telethon.errors import (
     ChatWriteForbiddenError,
     FloodWaitError,
     UserBannedInChannelError,
 )
-from telethon.tl.types import MessageEntity
 
 from db.models import BroadcastLog, BroadcastStatus, Campaign, CampaignStatus, Post, PostType
 from db.repositories.campaign_repo import CampaignRepository
@@ -285,8 +285,54 @@ class Broadcaster:
             return BroadcastStatus.FAILED, None, str(e)
 
 
-def _parse_entities(text_entities: str | None) -> list[MessageEntity] | None:
+def _parse_entities(text_entities: str | None) -> list[tl.types.TypeMessageEntity] | None:
     if not text_entities:
         return None
-    raw = json.loads(text_entities)
-    return [MessageEntity(**e) for e in raw] if raw else None
+    try:
+        raw = json.loads(text_entities)
+        if not raw:
+            return None
+
+        entities = []
+        for e in raw:
+            # aiogram stores 'type' as lowercase string, telethon wants MessageEntityXXX
+            etype = e.get("type")
+            if not etype:
+                continue
+
+            # Basic mapping from aiogram type to Telethon class name
+            mapping = {
+                "bold": tl.types.MessageEntityBold,
+                "italic": tl.types.MessageEntityItalic,
+                "underline": tl.types.MessageEntityUnderline,
+                "strikethrough": tl.types.MessageEntityStrike,
+                "code": tl.types.MessageEntityCode,
+                "pre": tl.types.MessageEntityPre,
+                "text_link": tl.types.MessageEntityTextUrl,
+                "mention": tl.types.MessageEntityMention,
+                "hashtag": tl.types.MessageEntityHashtag,
+                "bot_command": tl.types.MessageEntityBotCommand,
+                "url": tl.types.MessageEntityUrl,
+                "email": tl.types.MessageEntityEmail,
+                "phone_number": tl.types.MessageEntityPhone,
+                "cashtag": tl.types.MessageEntityCashtag,
+                "spoiler": tl.types.MessageEntitySpoiler,
+                "blockquote": tl.types.MessageEntityBlockquote,
+            }
+
+            cls = mapping.get(etype)
+            if not cls:
+                continue
+
+            kwargs = {"offset": e["offset"], "length": e["length"]}
+            if etype == "text_link":
+                kwargs["url"] = e["url"]
+            if etype == "pre":
+                kwargs["language"] = e.get("language", "")
+
+            entities.append(cls(**kwargs))
+
+        return entities if entities else None
+    except Exception:
+        log.error("Failed to parse entities", text_entities=text_entities)
+        return None

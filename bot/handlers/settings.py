@@ -12,18 +12,19 @@ from db.session import async_session_factory
 
 router = Router()
 
-_PROMPTS: dict[str, str] = {
-    "delay_between_chats": "Введи задержку между чатами в секундах (например: <code>5</code>):",
-    "randomize_delay": "Рандомизировать задержку?\nВведи: <code>да</code> или <code>нет</code>",
-    "randomize_min": "Введи минимальную задержку рандома в секундах (например: <code>3</code>):",
-    "randomize_max": "Введи максимальную задержку рандома в секундах (например: <code>10</code>):",
-    "shuffle_after_cycle": "Перемешивать список чатов после каждого цикла?\nВведи: <code>да</code> или <code>нет</code>",
-    "delay_between_cycles": "Введи задержку между циклами в секундах (например: <code>60</code>):",
-    "max_cycles": "Введи максимальное число циклов (0 = бесконечно):",
-    "forward_mode": "Режим отправки:\n<code>1</code> — Форвард (со ссылкой на источник)\n<code>2</code> — Копия (без атрибуции)\nВведи 1 или 2:",
-}
+_TOGGLE_FIELDS = {"randomize_delay", "shuffle_after_cycle", "forward_mode", "cycle_delay_randomize"}
 
-_BOOL_MAP = {"да": True, "нет": False, "yes": True, "no": False}
+_PROMPTS: dict[str, str] = {
+    "delay_between_chats": "⏱ Введи задержку между чатами в секундах (например: <code>5</code>):",
+    "randomize_min": "🎲 Введи минимальную задержку рандома между чатами в секундах (например: <code>3</code>):",
+    "randomize_max": "🎲 Введи максимальную задержку рандома между чатами в секундах (например: <code>10</code>):",
+    "shuffle_after_cycle": "🔀 Перемешивать список чатов после каждого цикла?\nВведи: <code>да</code> или <code>нет</code>",
+    "delay_between_cycles": "🔄 Введи задержку между циклами в секундах (например: <code>60</code>):",
+    "cycle_delay_min": "🎲 Введи минимальную задержку рандома между циклами в секундах (например: <code>30</code>):",
+    "cycle_delay_max": "🎲 Введи максимальную задержку рандома между циклами в секундах (например: <code>120</code>):",
+    "max_cycles": "🔁 Введи максимальное число циклов (<code>0</code> = бесконечно):",
+    "forward_mode": "📤 Режим отправки:\n<code>1</code> — Форвард (со ссылкой на источник)\n<code>2</code> — Копия (без атрибуции)\nВведи 1 или 2:",
+}
 
 
 @router.callback_query(F.data == "menu:settings")
@@ -47,7 +48,7 @@ async def cb_setting_select(callback: CallbackQuery, state: FSMContext, db_user:
     field = callback.data.split(":", 1)[1]
 
     # Toggle booleans inline without asking for input
-    if field in ("randomize_delay", "shuffle_after_cycle", "forward_mode"):
+    if field in _TOGGLE_FIELDS:
         async with async_session_factory() as session:
             async with session.begin():
                 repo = UserSettingsRepository(session)
@@ -59,8 +60,9 @@ async def cb_setting_select(callback: CallbackQuery, state: FSMContext, db_user:
         await callback.answer("Сохранено")
         return
 
+    prompt = _PROMPTS.get(field, "Введи значение:")
     await state.update_data(gs_field=field)
-    await callback.message.edit_text(_PROMPTS[field])
+    await callback.message.edit_text(prompt)
     await state.set_state(GlobalSettingsEdit.waiting_value)
     await callback.answer()
 
@@ -72,12 +74,15 @@ async def fsm_gs_value(message: Message, state: FSMContext, db_user: User) -> No
     raw = (message.text or "").strip().lower()
 
     try:
-        if field in ("delay_between_chats", "delay_between_cycles", "randomize_min", "randomize_max"):
+        if field in ("delay_between_chats", "delay_between_cycles", "randomize_min", "randomize_max",
+                     "cycle_delay_min", "cycle_delay_max"):
             value: object = int(raw)
-            if value < 0:
+            if int(raw) < 0:
                 raise ValueError
         elif field == "max_cycles":
             value = int(raw) or None
+        elif field == "forward_mode":
+            value = raw == "1"
         else:
             value = raw
     except (ValueError, KeyError):

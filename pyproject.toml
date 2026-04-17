@@ -10,8 +10,10 @@ requires-python = ">=3.11"
 dependencies = [
     # Bot framework
     "aiogram==3.13.1",
-    # Telegram user client
-    "telethon==1.36.0",
+    # Telegram user client: opentele2 wraps telethon with official API fingerprints
+    "opentele2>=1.1.6",
+    # AES-256-IGE C extension required by opentele2 (compiled during Docker build)
+    "tgcrypto>=1.2.0",
     # Database
     "sqlalchemy[asyncio]==2.0.36",
     "asyncpg==0.30.0",

@@ -12,9 +12,5 @@ preDeployCommand = "python scripts/migrate.py"
 startCommand = "python -m bot"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
-
-[deploy.healthcheck]
-# Railway will wait up to 300 s for the bot process to stay alive before
-# marking the deploy as healthy.
-type = "tcp"
-timeoutSeconds = 300
+# No TCP healthcheck — the bot is a long-running process, not a server.
+# Railway marks the deploy healthy once the process stays alive past startup.

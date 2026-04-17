@@ -12,11 +12,12 @@ from bot.keyboards.campaigns_kb import (
     campaign_view_kb,
     campaigns_list_kb,
     chat_select_kb,
+    session_offsets_kb,
     session_select_kb,
 )
 from bot.keyboards.posts_kb import posts_list_kb
 from bot.keyboards.utils import back_kb
-from bot.states.fsm import CampaignCreate, CampaignSettingsEdit
+from bot.states.fsm import CampaignCreate, CampaignSessionOffset, CampaignSettingsEdit
 from db.models import CampaignStatus, User
 from db.repositories.campaign_repo import CampaignRepository
 from db.repositories.chat_repo import ChatRepository
@@ -28,13 +29,15 @@ from db.session import async_session_factory
 router = Router()
 
 # Fields that toggle inline (no text input needed)
-_TOGGLE_FIELDS = {"randomize_delay", "shuffle_after_cycle", "forward_mode"}
+_TOGGLE_FIELDS = {"randomize_delay", "shuffle_after_cycle", "forward_mode", "cycle_delay_randomize"}
 
 _SETTING_PROMPTS: dict[str, str] = {
     "delay_between_chats": "⏱ Введи задержку между чатами в секундах (например: <code>5</code>):",
-    "randomize_min": "🎲 Введи минимальную задержку рандома в секундах (например: <code>3</code>):",
-    "randomize_max": "🎲 Введи максимальную задержку рандома в секундах (например: <code>10</code>):",
+    "randomize_min": "🎲 Введи минимальную задержку рандома между чатами в секундах (например: <code>3</code>):",
+    "randomize_max": "🎲 Введи максимальную задержку рандома между чатами в секундах (например: <code>10</code>):",
     "delay_between_cycles": "🔄 Введи задержку между циклами в секундах (например: <code>60</code>):",
+    "cycle_delay_min": "🎲 Введи минимальную задержку рандома между циклами в секундах (например: <code>30</code>):",
+    "cycle_delay_max": "🎲 Введи максимальную задержку рандома между циклами в секундах (например: <code>120</code>):",
     "max_cycles": "🔁 Введи максимальное число циклов (0 = бесконечно):",
 }
 
@@ -285,6 +288,9 @@ async def fsm_chats_done(callback: CallbackQuery, state: FSMContext, db_user: Us
                 "randomize_max": gs.randomize_max,
                 "shuffle_after_cycle": gs.shuffle_after_cycle,
                 "delay_between_cycles": gs.delay_between_cycles,
+                "cycle_delay_randomize": gs.cycle_delay_randomize,
+                "cycle_delay_min": gs.cycle_delay_min,
+                "cycle_delay_max": gs.cycle_delay_max,
                 "max_cycles": gs.max_cycles,
                 "forward_mode": gs.forward_mode,
             }
@@ -374,7 +380,11 @@ async def fsm_setting_value(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
 
     try:
-        if field in ("delay_between_chats", "delay_between_cycles", "randomize_min", "randomize_max"):
+        if field in (
+            "delay_between_chats", "delay_between_cycles",
+            "randomize_min", "randomize_max",
+            "cycle_delay_min", "cycle_delay_max"
+        ):
             value: object = int(raw)
             if int(raw) < 0:
                 raise ValueError
@@ -508,9 +518,9 @@ async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
     from worker.session_pool import SessionPool
     from worker.broadcaster import Broadcaster
     from services.crypto import decrypt
-    from telethon import TelegramClient
+    from opentele2.api import API
+    from opentele2.tl import TelegramClient
     from telethon.sessions import StringSession
-    from bot.core.config import settings as cfg
 
     await callback.answer("⏳ Отправляю тестовое сообщение...")
 
@@ -519,11 +529,7 @@ async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
         plain = decrypt(tg_session.encrypted_session)
         client = TelegramClient(
             StringSession(plain),
-            cfg.telethon_api_id,
-            cfg.telethon_api_hash,
-            device_model="iPhone 14 Pro Max",
-            system_version="16.0",
-            app_version="9.6.3",
+            api=API.TelegramIOS.Generate(),
         )
         await client.connect()
         if not await client.is_user_authorized():
@@ -593,6 +599,74 @@ async def cb_campaign_progress(callback: CallbackQuery) -> None:
     ])
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
+
+
+# ── Session Offsets ────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("campaign:offsets:"))
+async def cb_campaign_offsets(callback: CallbackQuery) -> None:
+    assert callback.message and callback.data
+    campaign_id = callback.data.split(":", 2)[2]
+    async with async_session_factory() as session:
+        repo = CampaignRepository(session)
+        campaign = await repo.get(uuid.UUID(campaign_id), load_relations=True)
+    if not campaign:
+        await callback.answer("Кампания не найдена", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"⏱ <b>Офсеты сессий</b> · <i>{campaign.name}</i>\n\n"
+        "Задай задержку для каждой сессии от момента старта кампании, "
+        "чтобы они начинали работу в разное время.",
+        reply_markup=session_offsets_kb(campaign_id, campaign.campaign_sessions),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("campaign:offset:edit:"))
+async def cb_offset_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    assert callback.message and callback.data
+    parts = callback.data.split(":")
+    campaign_id = parts[3]
+    session_id = parts[4]
+
+    await state.update_data(offset_campaign_id=campaign_id, offset_session_id=session_id)
+    await callback.message.edit_text(
+        "⏱ Введи задержку для этой сессии в секундах (например: <code>120</code>):"
+    )
+    await state.set_state(CampaignSessionOffset.waiting_offset)
+    await callback.answer()
+
+
+@router.message(CampaignSessionOffset.waiting_offset)
+async def fsm_offset_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    campaign_id = uuid.UUID(data["offset_campaign_id"])
+    session_id = uuid.UUID(data["offset_session_id"])
+    raw = (message.text or "").strip()
+
+    try:
+        offset = int(raw)
+        if offset < 0:
+            raise ValueError
+    except (ValueError, KeyError):
+        await message.answer("⚠️ Неверный формат. Введи положительное число секунд:")
+        return
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            repo = CampaignRepository(session)
+            await repo.update_session_offset(campaign_id, session_id, offset)
+            campaign = await repo.get(campaign_id, load_relations=True)
+
+    await state.clear()
+    if campaign:
+        await message.answer(
+            "✅ Офсет сохранён.",
+            reply_markup=session_offsets_kb(str(campaign_id), campaign.campaign_sessions),
+        )
+    else:
+        await message.answer("✅ Офсет сохранён.", reply_markup=back_kb(f"campaign:view:{campaign_id}"))
 
 
 # ── Stats ──────────────────────────────────────────────────────────────────────

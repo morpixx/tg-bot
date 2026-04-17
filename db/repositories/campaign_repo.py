@@ -131,6 +131,21 @@ class CampaignRepository:
             campaign.current_cycle += 1
             await self._session.flush()
 
+    async def update_session_offset(
+        self, campaign_id: uuid.UUID, session_id: uuid.UUID, offset: int
+    ) -> None:
+        """Update offset for specific session in campaign."""
+        result = await self._session.execute(
+            select(CampaignSession).where(
+                CampaignSession.campaign_id == campaign_id,
+                CampaignSession.session_id == session_id,
+            )
+        )
+        cs = result.scalar_one_or_none()
+        if cs:
+            cs.delay_offset_seconds = offset
+            await self._session.flush()
+
     async def delete(self, campaign_id: uuid.UUID) -> None:
         campaign = await self.get(campaign_id)
         if campaign:

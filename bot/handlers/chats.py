@@ -6,13 +6,18 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
+from telethon.utils import get_peer_id
+
 from bot.keyboards.utils import back_kb
 from bot.states.fsm import ChatAdd, ChatImport
 from db.models import User
 from db.repositories.chat_repo import ChatRepository
+from db.repositories.session_repo import SessionRepository
 from db.session import async_session_factory
+from worker.session_pool import SessionPool
 
 router = Router()
+session_pool = SessionPool()
 
 
 def _chats_list_kb(chats: list, page: int = 0):  # type: ignore[return]
@@ -80,33 +85,60 @@ async def fsm_chat_add(message: Message, state: FSMContext, db_user: User) -> No
         await message.answer("Введи username или ID чата:")
         return
 
-    # Resolve chat info via bot
-    try:
-        chat = await message.bot.get_chat(text)  # type: ignore[union-attr]
-    except Exception as e:
-        await message.answer(f"❌ Не удалось найти чат: {e}\n\nПроверь username/ID и доступность бота в чате.")
+    # Try to resolve chat info via first active Telethon session
+    async with async_session_factory() as session:
+        s_repo = SessionRepository(session)
+        user_sessions = await s_repo.get_by_user(db_user.tg_id)
+        active_sessions = [s for s in user_sessions if s.is_active]
+
+    if not active_sessions:
+        await message.answer(
+            "⚠️ Для поиска чата нужна хотя бы одна активная сессия в разделе «Сессии»."
+        )
         return
 
-    async with async_session_factory() as session:
-        async with session.begin():
-            repo = ChatRepository(session)
-            existing = await repo.find_by_chat_id(db_user.tg_id, chat.id)
-            if existing:
-                await message.answer(f"⚠️ Чат <b>{chat.title}</b> уже добавлен.", reply_markup=back_kb("menu:chats"))
-                await state.clear()
-                return
-            await repo.create(
-                user_id=db_user.tg_id,
-                chat_id=chat.id,
-                title=chat.title or str(chat.id),
-                username=chat.username,
-            )
+    try:
+        status_msg = await message.answer("⏳ Ищу чат...")
+        client = await session_pool.get_or_connect(active_sessions[0])
+        if not client:
+            raise RuntimeError("Failed to connect to session")
 
-    await state.clear()
-    await message.answer(
-        f"✅ Чат <b>{chat.title}</b> добавлен!",
-        reply_markup=back_kb("menu:chats"),
-    )
+        # Resolve entity (works for usernames and IDs)
+        try:
+            # Handle numeric IDs (Telegram IDs can be large)
+            entity_id = int(text)
+            entity = await client.get_entity(entity_id)
+        except ValueError:
+            # Not an integer, try as username
+            entity = await client.get_entity(text)
+
+        chat_id = get_peer_id(entity)
+
+        title = getattr(entity, 'title', None) or f"{getattr(entity, 'first_name', '')} {getattr(entity, 'last_name', '')}".strip()
+        username = getattr(entity, 'username', None)
+
+        async with async_session_factory() as session:
+            async with session.begin():
+                repo = ChatRepository(session)
+                existing = await repo.find_by_chat_id(db_user.tg_id, chat_id)
+                if existing:
+                    await status_msg.edit_text(f"⚠️ Чат <b>{title}</b> уже добавлен.", reply_markup=back_kb("menu:chats"))
+                    await state.clear()
+                    return
+                await repo.create(
+                    user_id=db_user.tg_id,
+                    chat_id=chat_id,
+                    title=title or str(chat_id),
+                    username=username,
+                )
+
+        await state.clear()
+        await status_msg.edit_text(
+            f"✅ Чат <b>{title}</b> добавлен!",
+            reply_markup=back_kb("menu:chats"),
+        )
+    except Exception as e:
+        await message.answer(f"❌ Не удалось найти чат: {e}\n\nПроверь корректность username/ID.")
 
 
 # ── Import chats from text list ───────────────────────────────────────────────
@@ -131,33 +163,60 @@ async def fsm_chat_import(message: Message, state: FSMContext, db_user: User) ->
         await message.answer("Список пуст. Попробуй ещё раз:")
         return
 
+    # Try to resolve chat info via first active Telethon session
+    async with async_session_factory() as session:
+        s_repo = SessionRepository(session)
+        user_sessions = await s_repo.get_by_user(db_user.tg_id)
+        active_sessions = [s for s in user_sessions if s.is_active]
+
+    if not active_sessions:
+        await message.answer(
+            "⚠️ Для импорта нужна хотя бы одна активная сессия в разделе «Сессии»."
+        )
+        return
+
     status_msg = await message.answer(f"⏳ Обрабатываю {len(lines)} чатов...")
     resolved: list[dict] = []
     errors: list[str] = []
 
-    for line in lines:
-        try:
-            chat = await message.bot.get_chat(line)  # type: ignore[union-attr]
-            resolved.append({
-                "chat_id": chat.id,
-                "title": chat.title or str(chat.id),
-                "username": chat.username,
-            })
-        except Exception:
-            errors.append(line)
+    try:
+        client = await session_pool.get_or_connect(active_sessions[0])
+        if not client:
+            raise RuntimeError("Failed to connect to session")
 
-    async with async_session_factory() as session:
-        async with session.begin():
-            repo = ChatRepository(session)
-            created = await repo.bulk_create(db_user.tg_id, resolved)
+        for line in lines:
+            try:
+                # Handle numeric IDs or usernames
+                try:
+                    entity_id = int(line)
+                    entity = await client.get_entity(entity_id)
+                except ValueError:
+                    entity = await client.get_entity(line)
 
-    await state.clear()
-    result_text = f"✅ Добавлено чатов: <b>{len(created)}</b>"
-    if errors:
-        result_text += f"\n❌ Не удалось найти ({len(errors)}): {', '.join(errors[:5])}"
-        if len(errors) > 5:
-            result_text += f" и ещё {len(errors) - 5}"
-    await status_msg.edit_text(result_text, reply_markup=back_kb("menu:chats"))
+                chat_id = get_peer_id(entity)
+                title = getattr(entity, 'title', None) or f"{getattr(entity, 'first_name', '')} {getattr(entity, 'last_name', '')}".strip()
+                resolved.append({
+                    "chat_id": chat_id,
+                    "title": title or str(chat_id),
+                    "username": getattr(entity, 'username', None),
+                })
+            except Exception:
+                errors.append(line)
+
+        async with async_session_factory() as session:
+            async with session.begin():
+                repo = ChatRepository(session)
+                created = await repo.bulk_create(db_user.tg_id, resolved)
+
+        await state.clear()
+        result_text = f"✅ Добавлено чатов: <b>{len(created)}</b>"
+        if errors:
+            result_text += f"\n❌ Не удалось найти ({len(errors)}): {', '.join(errors[:5])}"
+            if len(errors) > 5:
+                result_text += f" и ещё {len(errors) - 5}"
+        await status_msg.edit_text(result_text, reply_markup=back_kb("menu:chats"))
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Ошибка при импорте: {e}", reply_markup=back_kb("menu:chats"))
 
 
 # ── View / delete chat ────────────────────────────────────────────────────────

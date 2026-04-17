@@ -4,10 +4,10 @@ import uuid
 from typing import TYPE_CHECKING
 
 import structlog
-from telethon import TelegramClient
+from opentele2.api import API
+from opentele2.tl import TelegramClient
 from telethon.sessions import StringSession
 
-from bot.core.config import settings
 from services.crypto import decrypt
 
 if TYPE_CHECKING:
@@ -34,13 +34,8 @@ class SessionPool:
             plain_session = decrypt(tg_session.encrypted_session)
             client = TelegramClient(
                 StringSession(plain_session),
-                settings.telethon_api_id,
-                settings.telethon_api_hash,
-                device_model="iPhone 14 Pro Max",
-                system_version="16.0",
-                app_version="9.6.3",
-                lang_code="ru",
-                system_lang_code="ru-RU",
+                api=API.TelegramIOS.Generate(),
+                receive_updates=False,
             )
             await client.connect()
             if not await client.is_user_authorized():

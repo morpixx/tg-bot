@@ -247,6 +247,9 @@ class UserSettings(Base):
     randomize_max: Mapped[int] = mapped_column(Integer, default=10)
     shuffle_after_cycle: Mapped[bool] = mapped_column(Boolean, default=False)
     delay_between_cycles: Mapped[int] = mapped_column(Integer, default=60)
+    cycle_delay_randomize: Mapped[bool] = mapped_column(Boolean, default=False)
+    cycle_delay_min: Mapped[int] = mapped_column(Integer, default=30)
+    cycle_delay_max: Mapped[int] = mapped_column(Integer, default=120)
     max_cycles: Mapped[int | None] = mapped_column(Integer, nullable=True)
     forward_mode: Mapped[bool] = mapped_column(Boolean, default=True)
 

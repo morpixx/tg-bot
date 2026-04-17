@@ -154,9 +154,13 @@ class TestSendPost:
         import json
         client = self._make_client()
         post = self._make_post(PostType.TEXT)
-        post.text_entities = json.dumps([{"_": "MessageEntityBold", "offset": 0, "length": 5}])
+        # Use aiogram-style entities (lowercase 'type')
+        post.text_entities = json.dumps([{"type": "bold", "offset": 0, "length": 5}])
 
-        # Should not raise even if entity parsing is attempted
-        with patch("telethon.tl.types.MessageEntity", MagicMock(return_value=MagicMock())):
-            status, _, _ = await broadcaster._send_post(client, post, -200, forward_mode=True)
+        status, _, _ = await broadcaster._send_post(client, post, -200, forward_mode=True)
         assert status == BroadcastStatus.SUCCESS
+        # Check that formatting_entities was passed
+        client.send_message.assert_called_once()
+        args, kwargs = client.send_message.call_args
+        assert kwargs["formatting_entities"] is not None
+        assert len(kwargs["formatting_entities"]) == 1

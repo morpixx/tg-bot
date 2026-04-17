@@ -47,6 +47,10 @@ class CampaignSettingsEdit(StatesGroup):
     waiting_value = State()
 
 
+class CampaignSessionOffset(StatesGroup):
+    waiting_offset = State()
+
+
 class GlobalSettingsEdit(StatesGroup):
     waiting_value = State()
 

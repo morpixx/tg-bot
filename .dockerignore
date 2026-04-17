@@ -1,0 +1,37 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__
+*.py[cod]
+*.egg-info
+dist
+build
+.venv
+venv
+
+# Tools cache
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# Local config (secrets never go into the image)
+.env
+
+# Tests (not needed at runtime)
+tests
+
+# Dev / docs
+*.md
+*.log
+
+# Railway local config
+.railway
+
+# Docker itself
+docker-compose*.yml
+docker-compose.override.yml
