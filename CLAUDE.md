@@ -117,7 +117,7 @@ Required (see `.env.example`):
 - `DATABASE_URL` (asyncpg format), `DATABASE_SYNC_URL` (psycopg2, auto-derived if empty)
 - `REDIS_URL`
 
-**Not required:** `TELETHON_API_ID` / `TELETHON_API_HASH` — opentele2 uses official iOS API credentials internally. Fields exist in config with default `0`/`""` for backwards compatibility.
+**Not required:** `TELETHON_API_ID` / `TELETHON_API_HASH` — opentele2 generates its own iOS API credentials per connection via `API.TelegramIOS.Generate()`. Fields still exist in `config.py` with default `0`/`""` for backwards compatibility; any values set in production env are ignored.
 
 `config.py` auto-converts Railway's plain `postgresql://` URL to `postgresql+asyncpg://` for the app and `postgresql+psycopg2://` for Alembic.
 

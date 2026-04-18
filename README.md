@@ -1,6 +1,6 @@
 # TG Broadcast Bot
 
-Production-ready Telegram bot for mass-messaging across chats via multiple user accounts (Telethon sessions). Supports multiple operators, each with their own sessions, posts, and campaigns.
+Production-ready Telegram bot for mass-messaging across chats via multiple user accounts (opentele2/Telethon sessions). Supports multiple operators, each with their own sessions, posts, and campaigns.
 
 ## Features
 
@@ -20,7 +20,7 @@ Two separate processes communicate via the database:
 
 ```
 ┌─────────────────────────────────────┐    ┌──────────────────────────────────┐
-│  bot/  (aiogram 3.x)                │    │  worker/  (Telethon)             │
+│  bot/  (aiogram 3.x)                │    │  worker/  (opentele2 / Telethon) │
 │                                     │    │                                  │
 │  Handles UI, FSM, keyboards         │    │  Polls DB every 10s              │
 │  Subscription gate middleware       │    │  Manages TelegramClient pool     │
@@ -42,7 +42,8 @@ Two separate processes communicate via the database:
 
 - Docker & Docker Compose
 - Telegram Bot Token — from [@BotFather](https://t.me/BotFather)
-- Telegram API credentials — from [my.telegram.org/apps](https://my.telegram.org/apps)
+
+> **API credentials are not required.** opentele2 generates its own iOS device fingerprint per connection, which reduces the chance of Telegram flagging sessions.
 
 ### 2. Configure
 
@@ -56,9 +57,6 @@ Edit `.env`:
 BOT_TOKEN=your_bot_token
 OWNER_ID=your_telegram_user_id
 REQUIRED_CHANNEL_IDS=-1001234567890   # comma-separated, or leave empty
-
-TELETHON_API_ID=12345678
-TELETHON_API_HASH=abcdef...
 
 # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ENCRYPTION_KEY=your_fernet_key=
@@ -232,12 +230,12 @@ Railway auto-injects `DATABASE_URL` — you don't set it manually.
 |---|---|
 | `BOT_TOKEN` | your bot token |
 | `OWNER_ID` | your Telegram user ID |
-| `TELETHON_API_ID` | from my.telegram.org/apps |
-| `TELETHON_API_HASH` | from my.telegram.org/apps |
 | `ENCRYPTION_KEY` | generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `REQUIRED_CHANNEL_IDS` | comma-separated IDs, or leave empty |
 | `REDIS_URL` | from your Redis environment (see below) |
 | `DATABASE_URL` | **do not set** — injected by Postgres plugin |
+
+`TELETHON_API_ID` / `TELETHON_API_HASH` are **not** needed — opentele2 generates its own iOS credentials per connection.
 
 **6. Redis (separate environment on free plan):**
 - Create a new Railway environment (or a second project).
@@ -261,7 +259,8 @@ Required GitHub secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`
 
 ## Security Notes
 
-- Telethon StringSessions are encrypted with Fernet before storage. The `ENCRYPTION_KEY` must be kept secret.
-- Bot token and API credentials live in `.env` (never committed).
+- opentele2/Telethon `StringSession`s are encrypted with Fernet before storage. The `ENCRYPTION_KEY` must be kept secret.
+- Bot token lives in `.env` (never committed).
 - The subscription gate blocks all users who are not subscribed to configured channels.
-- Owner ID is hardcoded in config — only this user gets admin access.
+- Owner ID is read from `OWNER_ID` — only this user gets admin access (`/admin`, `/notify_all`, panel button).
+- The worker sets `receive_updates=False` on every client so sessions stay online longer (Telegram drops sessions that don't ack updates quickly).
