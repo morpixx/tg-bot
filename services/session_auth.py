@@ -47,6 +47,7 @@ class QRLoginSession:
         self._done = asyncio.Event()
         self._result: AuthResult | None = None
         self._password_needed = asyncio.Event()
+        self._finalized = False  # guard against double-save on refresh race
 
     async def start(self) -> bytes:
         """Connect client, start QR login, return QR image bytes."""
@@ -54,12 +55,14 @@ class QRLoginSession:
         self._qr_login = await self._client.qr_login()
         return self._generate_qr_image(self._qr_login.url)
 
-    async def wait_for_scan(self, timeout: float = 30.0) -> str | None:
+    async def wait_for_scan(self, timeout: float = 30.0) -> str:
         """
         Wait for QR scan. Returns 'success', 'password_needed', or 'expired'.
+        Uses Telethon's native timeout so no asyncio.wait_for wrapping is needed —
+        cancellation from an outer task propagates cleanly.
         """
         try:
-            await asyncio.wait_for(self._qr_login.wait(), timeout=timeout)
+            await self._qr_login.wait(timeout)
             return "success"
         except SessionPasswordNeededError:
             return "password_needed"
@@ -83,6 +86,9 @@ class QRLoginSession:
         return await self._finalize()
 
     async def _finalize(self) -> AuthResult:
+        if self._finalized:
+            return AuthResult(success=False, error="Already finalized")
+        self._finalized = True
         try:
             me = await self._client.get_me()
             string_session = self._client.session.save()
@@ -97,7 +103,10 @@ class QRLoginSession:
         except Exception as e:
             return AuthResult(success=False, error=str(e))
         finally:
-            await self._client.disconnect()
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
 
     async def cancel(self) -> None:
         await self._client.disconnect()
@@ -142,7 +151,14 @@ class PhoneLoginSession:
         except FloodWaitError as e:
             return False, f"Слишком много попыток. Подождите {e.seconds} сек."
         except Exception as e:
-            return False, str(e)
+            err = str(e)
+            if "RECAPTCHA" in err or "recaptcha" in err.lower():
+                return False, (
+                    "Telegram заблокировал вход по номеру телефона с данного IP/устройства "
+                    "(требует CAPTCHA).\n\n"
+                    "Используй <b>QR-код</b> — он не имеет таких ограничений."
+                )
+            return False, err
 
     async def submit_code(self, code: str) -> tuple[str, str]:
         """

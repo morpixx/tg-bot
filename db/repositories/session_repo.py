@@ -16,9 +16,19 @@ class SessionRepository:
         return await self._session.get(TelegramSession, session_id)
 
     async def get_by_user(self, user_id: int) -> list[TelegramSession]:
+        """Return only active sessions (used by worker / chat resolution)."""
         result = await self._session.execute(
             select(TelegramSession)
             .where(TelegramSession.user_id == user_id, TelegramSession.is_active == True)  # noqa: E712
+            .order_by(TelegramSession.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def get_all_by_user(self, user_id: int) -> list[TelegramSession]:
+        """Return all sessions regardless of is_active (used for UI listing)."""
+        result = await self._session.execute(
+            select(TelegramSession)
+            .where(TelegramSession.user_id == user_id)
             .order_by(TelegramSession.created_at)
         )
         return list(result.scalars().all())

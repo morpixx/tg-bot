@@ -19,11 +19,13 @@ from db.models import User
 from db.repositories.session_repo import SessionRepository
 from db.session import async_session_factory
 from services.session_auth import PhoneLoginSession, QRLoginSession
+from worker.session_pool import SessionPool
 
 router = Router()
 
 # In-memory store for active auth sessions (keyed by user tg_id)
 _qr_sessions: dict[int, QRLoginSession] = {}
+_qr_tasks: dict[int, asyncio.Task] = {}  # type: ignore[type-arg]
 _phone_sessions: dict[int, PhoneLoginSession] = {}
 
 
@@ -34,9 +36,10 @@ async def cb_sessions_list(callback: CallbackQuery, db_user: User) -> None:
     assert callback.message
     async with async_session_factory() as session:
         repo = SessionRepository(session)
-        sessions = await repo.get_by_user(db_user.tg_id)
-    count = len(sessions)
-    text = f"📱 <b>Сессии</b> ({count})\n\nВыбери сессию или добавь новую:"
+        sessions = await repo.get_all_by_user(db_user.tg_id)
+    active = sum(1 for s in sessions if s.is_active)
+    total = len(sessions)
+    text = f"📱 <b>Сессии</b> ({active}/{total} активных)\n\nВыбери сессию или добавь новую:"
     await callback.message.edit_text(text, reply_markup=sessions_list_kb(sessions))
     await callback.answer()
 
@@ -54,9 +57,11 @@ async def cb_session_view(callback: CallbackQuery) -> None:
     if not tg_session:
         await callback.answer("Сессия не найдена", show_alert=True)
         return
-    premium = "💎 Premium" if tg_session.has_premium else "Нет"
+    premium = "💎 Premium" if tg_session.has_premium else "нет"
+    status = "🟢 Активна" if tg_session.is_active else "🔴 Отключена"
     text = (
         f"📱 <b>{tg_session.name}</b>\n\n"
+        f"🔌 Статус: {status}\n"
         f"👤 Аккаунт: {tg_session.account_name or '—'}\n"
         f"🆔 @{tg_session.account_username or '—'}\n"
         f"📞 {tg_session.phone or '—'}\n"
@@ -131,7 +136,10 @@ async def fsm_qr_name(message: Message, state: FSMContext, db_user: User) -> Non
     await state.set_state(SessionAddQR.waiting_scan)
 
     # Background task: wait for scan
-    asyncio.create_task(_wait_for_qr_scan(message.from_user.id, message.chat.id, state))  # type: ignore[union-attr]
+    user_id = message.from_user.id  # type: ignore[union-attr]
+    chat_id = message.chat.id
+    task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
+    _qr_tasks[user_id] = task
 
 
 async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> None:
@@ -139,25 +147,56 @@ async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> No
     auth = _qr_sessions.get(user_id)
     if not auth:
         return
-    result = await auth.wait_for_scan(timeout=60.0)
+    try:
+        result = await auth.wait_for_scan(timeout=60.0)
+    except asyncio.CancelledError:
+        return  # task was cancelled by a refresh — new task takes over
+    except Exception as e:
+        _qr_sessions.pop(user_id, None)
+        _qr_tasks.pop(user_id, None)
+        await state.clear()
+        await bot.send_message(chat_id, f"❌ Ошибка при ожидании QR: {e}")
+        return
+
     if result == "success":
-        auth_result = await auth.finalize()
-        await _save_session(user_id, chat_id, state, auth_result)
+        _qr_sessions.pop(user_id, None)
+        _qr_tasks.pop(user_id, None)
+        try:
+            auth_result = await auth.finalize()
+            await _save_session(user_id, chat_id, state, auth_result)
+        except Exception as e:
+            await state.clear()
+            await bot.send_message(chat_id, f"❌ Не удалось сохранить сессию: {e}")
     elif result == "password_needed":
         await bot.send_message(chat_id, "🔐 Введи пароль двухфакторной аутентификации:")
         await state.set_state(SessionAddQR.waiting_2fa)
     else:
+        # QR expired — leave session in dict so user can refresh
         await bot.send_message(chat_id, "⏰ QR-код истёк. Нажми «Обновить QR» или начни заново.")
 
 
 @router.callback_query(F.data == "session:qr:refresh", SessionAddQR.waiting_scan)
-async def cb_qr_refresh(callback: CallbackQuery, db_user: User) -> None:
+async def cb_qr_refresh(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
     assert callback.message
-    auth = _qr_sessions.get(db_user.tg_id)
+    user_id = db_user.tg_id
+    chat_id = callback.message.chat.id
+
+    auth = _qr_sessions.get(user_id)
     if not auth:
         await callback.answer("Сессия устарела. Начни заново.", show_alert=True)
         return
-    qr_bytes = await auth.refresh_qr()
+
+    try:
+        qr_bytes = await auth.refresh_qr()
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка обновления: {e}", show_alert=True)
+        return
+
+    # Cancel the old watcher task — it was watching the previous QR object
+    old_task = _qr_tasks.pop(user_id, None)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
     photo = BufferedInputFile(qr_bytes, filename="qr.png")
     await callback.message.delete()
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -174,13 +213,22 @@ async def cb_qr_refresh(callback: CallbackQuery, db_user: User) -> None:
         caption="🔄 QR обновлён. Отсканируй снова.",
         reply_markup=kb,
     )
+
+    # Start a new watcher task for the refreshed QR
+    task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
+    _qr_tasks[user_id] = task
+
     await callback.answer()
 
 
 @router.callback_query(F.data == "session:qr:cancel")
 async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
     assert callback.message
-    auth = _qr_sessions.pop(db_user.tg_id, None)
+    user_id = db_user.tg_id
+    task = _qr_tasks.pop(user_id, None)
+    if task and not task.done():
+        task.cancel()
+    auth = _qr_sessions.pop(user_id, None)
     if auth:
         await auth.cancel()
     await state.clear()
@@ -234,7 +282,9 @@ async def fsm_phone_number(message: Message, state: FSMContext, db_user: User) -
     success, error = await auth.send_code(phone)
     if not success:
         _phone_sessions.pop(db_user.tg_id, None)
-        await status.edit_text(f"❌ Ошибка: {error}")
+        await auth.cancel()
+        await state.clear()
+        await status.edit_text(f"❌ {error}", reply_markup=back_kb("menu:sessions"))
         return
     await status.edit_text(
         "📨 Код отправлен в Telegram.\n\n"
@@ -278,6 +328,54 @@ async def fsm_phone_2fa(message: Message, state: FSMContext, db_user: User) -> N
     auth_result = await auth.finalize()
     _phone_sessions.pop(db_user.tg_id, None)
     await _save_session(db_user.tg_id, message.chat.id, state, auth_result, message)
+
+
+# ── Health check ─────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("session:check:"))
+async def cb_session_check(callback: CallbackQuery) -> None:
+    import uuid
+    assert callback.message and callback.data
+    session_id = callback.data.split(":", 2)[2]
+    await callback.answer("⏳ Проверяю...", show_alert=False)
+
+    async with async_session_factory() as session:
+        repo = SessionRepository(session)
+        tg_session = await repo.get(uuid.UUID(session_id))
+
+    if not tg_session:
+        await callback.message.edit_text("❌ Сессия не найдена.")
+        return
+
+    pool = SessionPool()
+    try:
+        is_alive = await pool.health_check(tg_session)
+    finally:
+        await pool.disconnect_all()
+
+    async with async_session_factory() as db_session:
+        async with db_session.begin():
+            repo2 = SessionRepository(db_session)
+            await repo2.update(tg_session.id, is_active=is_alive)
+
+    # Re-fetch updated record and refresh the view
+    async with async_session_factory() as session:
+        repo = SessionRepository(session)
+        tg_session = await repo.get(uuid.UUID(session_id))
+
+    assert tg_session
+    premium = "💎 Premium" if tg_session.has_premium else "нет"
+    status = "🟢 Активна" if tg_session.is_active else "🔴 Отключена"
+    text = (
+        f"📱 <b>{tg_session.name}</b>\n\n"
+        f"🔌 Статус: {status}\n"
+        f"👤 Аккаунт: {tg_session.account_name or '—'}\n"
+        f"🆔 @{tg_session.account_username or '—'}\n"
+        f"📞 {tg_session.phone or '—'}\n"
+        f"⭐ Premium: {premium}\n"
+        f"🕐 Добавлена: {tg_session.created_at.strftime('%d.%m.%Y %H:%M')}"
+    )
+    await callback.message.edit_text(text, reply_markup=session_view_kb(session_id))
 
 
 # ── Delete session ────────────────────────────────────────────────────────────

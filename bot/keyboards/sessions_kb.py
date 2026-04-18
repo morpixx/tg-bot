@@ -30,6 +30,7 @@ def session_add_method_kb() -> InlineKeyboardMarkup:
 def session_view_kb(session_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Проверить связь", callback_data=f"session:check:{session_id}")],
             [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"session:delete:{session_id}")],
             [back_button("menu:sessions")],
         ]
