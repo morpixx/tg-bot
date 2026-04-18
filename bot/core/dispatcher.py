@@ -10,9 +10,11 @@ from bot.handlers import (
     chats,
     posts,
     sessions,
-    settings as settings_handlers,
     start,
     stats,
+)
+from bot.handlers import (
+    settings as settings_handlers,
 )
 from bot.middlewares.subscription import SubscriptionMiddleware
 from bot.middlewares.user import UserMiddleware

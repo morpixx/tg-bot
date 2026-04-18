@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject, Update
+from aiogram.types import TelegramObject
 
 from db.repositories.user_repo import UserRepository
 from db.session import async_session_factory
@@ -22,6 +23,9 @@ class UserMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
+        # Upsert the user in a short-lived session and release it BEFORE calling
+        # the handler — otherwise every handler holds a DB connection for its
+        # full duration, which starves the pool under load.
         async with async_session_factory() as session:
             async with session.begin():
                 repo = UserRepository(session)
@@ -30,6 +34,6 @@ class UserMiddleware(BaseMiddleware):
                     username=user.username,
                     full_name=user.full_name,
                 )
-                data["db_user"] = db_user
-                data["db_session"] = session
-                return await handler(event, data)
+            data["db_user"] = db_user
+
+        return await handler(event, data)

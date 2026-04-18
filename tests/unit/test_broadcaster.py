@@ -9,7 +9,6 @@ from db.models import BroadcastStatus, PostType
 from worker.broadcaster import Broadcaster, get_progress, request_stop
 from worker.session_pool import SessionPool
 
-
 # ── Stop signals ──────────────────────────────────────────────────────────────
 
 class TestStopSignals:
@@ -77,16 +76,22 @@ class TestSendPost:
     async def test_forwarded_copy_mode(self, broadcaster) -> None:
         client = self._make_client()
         post = self._make_post(PostType.FORWARDED)
-        status, msg_id, error = await broadcaster._send_post(client, post, -200, forward_mode=False)
+        cached = MagicMock()
+        cached.message = "text"
+        cached.media = None
+        cached.entities = None
+        status, msg_id, error = await broadcaster._send_post(
+            client, post, -200, forward_mode=False, cached_source_msg=cached,
+        )
         assert status == BroadcastStatus.SUCCESS
-        client.get_messages.assert_called_once()
         client.send_message.assert_called_once()
 
     async def test_forwarded_copy_source_not_found(self, broadcaster) -> None:
         client = self._make_client()
-        client.get_messages.return_value = None
         post = self._make_post(PostType.FORWARDED)
-        status, msg_id, error = await broadcaster._send_post(client, post, -200, forward_mode=False)
+        status, msg_id, error = await broadcaster._send_post(
+            client, post, -200, forward_mode=False, cached_source_msg=None,
+        )
         assert status == BroadcastStatus.SKIPPED
         assert error == "Source message not found"
 

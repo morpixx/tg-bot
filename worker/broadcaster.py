@@ -151,7 +151,9 @@ class Broadcaster:
         pending_logs: list[BroadcastLog] = []
         is_paused = False  # track pause state to avoid unnecessary DB hits
 
-        for i, chat in enumerate(chats):
+        i = 0
+        while i < len(chats):
+            chat = chats[i]
             if _stop_signals.get(campaign.id):
                 break
 
@@ -166,7 +168,7 @@ class Broadcaster:
                         log.info("Campaign paused, waiting...", campaign_id=str(campaign.id))
                         is_paused = True
                     await asyncio.sleep(3)
-                    continue  # re-check on next loop iteration
+                    continue  # re-check same chat — don't skip ahead
                 else:
                     is_paused = False
 
@@ -203,6 +205,7 @@ class Broadcaster:
             if cfg.randomize_delay:
                 delay = random.randint(cfg.randomize_min, cfg.randomize_max)
             await asyncio.sleep(delay)
+            i += 1
 
         # Flush remaining logs
         if pending_logs:

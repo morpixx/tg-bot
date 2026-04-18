@@ -5,7 +5,6 @@ import uuid
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-
 from telethon.utils import get_peer_id
 
 from bot.keyboards.utils import back_kb
@@ -22,6 +21,7 @@ session_pool = SessionPool()
 
 def _chats_list_kb(chats: list, page: int = 0):  # type: ignore[return]
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
     from bot.keyboards.utils import back_button, paginate
 
     sliced, page_kb = paginate(chats, page, page_size=10, callback_prefix="chats:page")
@@ -158,7 +158,7 @@ async def cb_chat_import(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(ChatImport.waiting_list)
 async def fsm_chat_import(message: Message, state: FSMContext, db_user: User) -> None:
     text = (message.text or "").strip()
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         await message.answer("Список пуст. Попробуй ещё раз:")
         return

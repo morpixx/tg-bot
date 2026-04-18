@@ -7,7 +7,6 @@ import pytest
 from db.models import CampaignStatus
 from db.repositories.campaign_repo import CampaignRepository
 
-
 pytestmark = pytest.mark.integration
 
 

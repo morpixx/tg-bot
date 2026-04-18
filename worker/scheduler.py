@@ -7,7 +7,6 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot.core.config import settings
-from db.models import CampaignStatus
 from db.repositories.campaign_repo import CampaignRepository
 from db.repositories.session_repo import SessionRepository
 from db.session import async_session_factory
@@ -52,12 +51,7 @@ class WorkerScheduler:
         for campaign in active:
             if campaign.id not in self._running_campaigns:
                 log.info("Launching campaign task", campaign_id=str(campaign.id))
-                task = asyncio.create_task(
-                    self._broadcaster.run_campaign(campaign.id),
-                    name=f"campaign-{campaign.id}",
-                )
-                self._running_campaigns[campaign.id] = task
-                task.add_done_callback(lambda t, cid=campaign.id: self._on_campaign_done(cid, t))
+                self._launch(campaign.id)
 
         # Remove finished tasks for campaigns no longer active
         for cid in list(self._running_campaigns.keys()):
@@ -66,6 +60,14 @@ class WorkerScheduler:
                 if task and not task.done():
                     from worker.broadcaster import request_stop
                     request_stop(cid)
+
+    def _launch(self, cid: uuid.UUID) -> None:
+        task = asyncio.create_task(
+            self._broadcaster.run_campaign(cid),
+            name=f"campaign-{cid}",
+        )
+        self._running_campaigns[cid] = task
+        task.add_done_callback(lambda t: self._on_campaign_done(cid, t))
 
     def _on_campaign_done(self, campaign_id: uuid.UUID, task: asyncio.Task) -> None:  # type: ignore[type-arg]
         self._running_campaigns.pop(campaign_id, None)

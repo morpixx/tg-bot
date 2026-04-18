@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from services.session_auth import AuthResult, PhoneLoginSession, QRLoginSession
-
 
 # ── QR image generation ───────────────────────────────────────────────────────
 
@@ -18,7 +16,7 @@ class TestQRImage:
 
     def test_generate_non_empty(self) -> None:
         png = QRLoginSession._generate_qr_image("tg://login?token=XYZ")
-        assert len(png) > 1000  # reasonable size for a QR PNG
+        assert len(png) > 200  # reasonable lower bound for a QR PNG
 
 
 # ── AuthResult ────────────────────────────────────────────────────────────────

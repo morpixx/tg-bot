@@ -263,6 +263,8 @@ async def cmd_cancel_notify(message: Message, state: FSMContext) -> None:
 
 @router.message(AdminNotify.waiting_message)
 async def fsm_admin_notify_message(message: Message, state: FSMContext) -> None:
+    import asyncio
+
     await state.clear()
 
     async with async_session_factory() as session:
@@ -273,12 +275,14 @@ async def fsm_admin_notify_message(message: Message, state: FSMContext) -> None:
 
     sent = 0
     failed = 0
+    # Telegram global bot API limit is ~30 msg/sec; keep well below it.
     for user in users:
         try:
             await message.copy_to(user.tg_id)
             sent += 1
         except Exception:
             failed += 1
+        await asyncio.sleep(0.05)
 
     await status_msg.edit_text(
         f"📨 <b>Рассылка завершена</b>\n\n"

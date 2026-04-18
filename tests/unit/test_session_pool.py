@@ -47,6 +47,7 @@ async def test_not_authorized_returns_none(pool, fake_session) -> None:
 
     with (
         patch("worker.session_pool.decrypt", return_value="plain"),
+        patch("worker.session_pool.StringSession", return_value=MagicMock()),
         patch("worker.session_pool.TelegramClient", return_value=mock_client),
     ):
         result = await pool.get_or_connect(fake_session)
@@ -62,6 +63,7 @@ async def test_authorized_client_added_to_pool(pool, fake_session) -> None:
 
     with (
         patch("worker.session_pool.decrypt", return_value="plain"),
+        patch("worker.session_pool.StringSession", return_value=MagicMock()),
         patch("worker.session_pool.TelegramClient", return_value=mock_client),
     ):
         result = await pool.get_or_connect(fake_session)
@@ -82,6 +84,7 @@ async def test_already_connected_returns_cached(pool, fake_session) -> None:
 async def test_general_exception_returns_none(pool, fake_session) -> None:
     with (
         patch("worker.session_pool.decrypt", return_value="plain"),
+        patch("worker.session_pool.StringSession", return_value=MagicMock()),
         patch("worker.session_pool.TelegramClient", side_effect=RuntimeError("oops")),
     ):
         result = await pool.get_or_connect(fake_session)
@@ -125,6 +128,7 @@ async def test_health_check_alive(pool, fake_session) -> None:
 
     with (
         patch("worker.session_pool.decrypt", return_value="plain"),
+        patch("worker.session_pool.StringSession", return_value=MagicMock()),
         patch("worker.session_pool.TelegramClient", return_value=mock_client),
     ):
         alive = await pool.health_check(fake_session)

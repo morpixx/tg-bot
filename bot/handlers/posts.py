@@ -15,7 +15,7 @@ from bot.keyboards.posts_kb import (
 )
 from bot.keyboards.utils import back_kb
 from bot.states.fsm import PostAdd
-from db.models import Post, PostType, User
+from db.models import PostType, User
 from db.repositories.post_repo import PostRepository
 from db.session import async_session_factory
 

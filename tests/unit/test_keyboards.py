@@ -3,19 +3,26 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock
 
-import pytest
-
 from bot.keyboards.main_menu import main_menu_kb
 from bot.keyboards.utils import back_button, back_kb, confirm_kb, paginate
-
 
 # ── Main menu ─────────────────────────────────────────────────────────────────
 
 class TestMainMenu:
-    def test_has_5_buttons(self) -> None:
-        kb = main_menu_kb()
+    def test_has_6_buttons_for_regular_user(self) -> None:
+        kb = main_menu_kb(is_owner=False)
         buttons = [b for row in kb.inline_keyboard for b in row]
-        assert len(buttons) == 5
+        assert len(buttons) == 6
+
+    def test_owner_sees_admin_button(self) -> None:
+        kb = main_menu_kb(is_owner=True)
+        datas = [b.callback_data for row in kb.inline_keyboard for b in row]
+        assert "admin:panel" in datas
+
+    def test_regular_user_no_admin_button(self) -> None:
+        kb = main_menu_kb(is_owner=False)
+        datas = [b.callback_data for row in kb.inline_keyboard for b in row]
+        assert "admin:panel" not in datas
 
     def test_has_sessions_button(self) -> None:
         kb = main_menu_kb()
@@ -218,7 +225,19 @@ class TestCampaignsKb:
 
     def test_settings_has_all_options(self) -> None:
         from bot.keyboards.campaigns_kb import campaign_settings_kb
-        kb = campaign_settings_kb("test-id")
+        cfg = MagicMock()
+        cfg.delay_between_chats = 5
+        cfg.randomize_delay = False
+        cfg.randomize_min = 3
+        cfg.randomize_max = 10
+        cfg.delay_between_cycles = 60
+        cfg.cycle_delay_randomize = False
+        cfg.cycle_delay_min = 30
+        cfg.cycle_delay_max = 120
+        cfg.shuffle_after_cycle = False
+        cfg.max_cycles = None
+        cfg.forward_mode = True
+        kb = campaign_settings_kb("test-id", cfg)
         datas = [b.callback_data for row in kb.inline_keyboard for b in row]
         assert any("delay_between_chats" in (d or "") for d in datas)
         assert any("shuffle_after_cycle" in (d or "") for d in datas)

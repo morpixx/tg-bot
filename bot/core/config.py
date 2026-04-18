@@ -12,12 +12,6 @@ class Settings(BaseSettings):
     owner_id: int
     required_channel_ids: list[int] = []
 
-    # Telethon credentials — kept for backwards compatibility but no longer used
-    # at runtime: opentele2 uses official iOS API credentials internally.
-    # Safe to omit from Railway variables.
-    telethon_api_id: int = 0
-    telethon_api_hash: str = ""
-
     # Encryption
     encryption_key: str
 
@@ -36,7 +30,7 @@ class Settings(BaseSettings):
     session_health_check_interval: int = 1800
 
     @model_validator(mode="after")
-    def fix_db_urls(self) -> "Settings":
+    def fix_db_urls(self) -> Settings:
         """
         Railway provides DATABASE_URL as plain postgresql://...
         We need asyncpg (async) and psycopg2 (Alembic sync) variants.

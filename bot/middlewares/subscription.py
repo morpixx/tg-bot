@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware, Bot
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from bot.core.config import settings
 from services.subscription import check_subscriptions, get_channel_invite_links
-
 
 SUBSCRIBE_TEXT = (
     "🔒 <b>Доступ закрыт</b>\n\n"
@@ -36,6 +36,12 @@ class SubscriptionMiddleware(BaseMiddleware):
 
         # Owner always has access
         if user.id == settings.owner_id:
+            return await handler(event, data)
+
+        # Allow the "I subscribed" re-check callback through unconditionally —
+        # otherwise the user is stuck forever (middleware blocks the very button
+        # that would let them pass the gate).
+        if isinstance(event, CallbackQuery) and event.data == "check_subscription":
             return await handler(event, data)
 
         bot: Bot = data["bot"]

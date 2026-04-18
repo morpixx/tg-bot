@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import uuid
-
 import pytest
 
 from db.repositories.chat_repo import ChatRepository
-
 
 pytestmark = pytest.mark.integration
 
@@ -32,8 +29,8 @@ async def test_position_increments(db_session, db_user) -> None:
 
 async def test_get_by_user_ordered(db_session, db_user) -> None:
     repo = ChatRepository(db_session)
-    c1 = await repo.create(db_user.tg_id, -3001, "A")
-    c2 = await repo.create(db_user.tg_id, -3002, "B")
+    await repo.create(db_user.tg_id, -3001, "A")
+    await repo.create(db_user.tg_id, -3002, "B")
     chats = await repo.get_by_user(db_user.tg_id)
     positions = [c.position for c in chats]
     assert positions == sorted(positions)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -281,7 +281,7 @@ async def fsm_chats_done(callback: CallbackQuery, state: FSMContext, db_user: Us
             repo = CampaignRepository(session)
             gs_repo = UserSettingsRepository(session)
             gs = await gs_repo.get_or_create(db_user.tg_id)
-            defaults = {
+            defaults: dict[str, object] = {
                 "delay_between_chats": gs.delay_between_chats,
                 "randomize_delay": gs.randomize_delay,
                 "randomize_min": gs.randomize_min,
@@ -424,7 +424,7 @@ async def cb_campaign_start(callback: CallbackQuery) -> None:
             campaign = await repo.get(uuid.UUID(campaign_id))
             if campaign:
                 campaign.status = CampaignStatus.ACTIVE
-                campaign.started_at = datetime.now(timezone.utc)
+                campaign.started_at = datetime.now(UTC)
     await callback.message.edit_text(
         "▶️ <b>Кампания запущена!</b>\n\nВоркер начнёт рассылку в течение 10 секунд.",
         reply_markup=campaign_view_kb(campaign_id, CampaignStatus.ACTIVE),
@@ -488,7 +488,7 @@ async def cb_campaign_restart(callback: CallbackQuery) -> None:
             if campaign:
                 campaign.status = CampaignStatus.ACTIVE
                 campaign.current_cycle = 0
-                campaign.started_at = datetime.now(timezone.utc)
+                campaign.started_at = datetime.now(UTC)
     await callback.message.edit_text(
         "🔄 <b>Кампания перезапущена с нуля!</b>",
         reply_markup=campaign_view_kb(campaign_id, CampaignStatus.ACTIVE),
@@ -515,12 +515,14 @@ async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
         return
 
     # Use first active session to send to the user's own chat
-    from worker.session_pool import SessionPool
-    from worker.broadcaster import Broadcaster
-    from services.crypto import decrypt
     from opentele2.api import API
     from opentele2.tl import TelegramClient
     from telethon.sessions import StringSession
+
+    from db.models import PostType
+    from services.crypto import decrypt
+    from worker.broadcaster import Broadcaster
+    from worker.session_pool import SessionPool
 
     await callback.answer("⏳ Отправляю тестовое сообщение...")
 
@@ -537,19 +539,32 @@ async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
             await client.disconnect()
             return
 
+        # For copy-mode forwarded posts, broadcaster expects a pre-fetched source
+        # message — without it, _send_post returns SKIPPED.
+        cached_source_msg = None
+        if campaign.post.type == PostType.FORWARDED and not campaign.settings.forward_mode:
+            try:
+                cached_source_msg = await client.get_messages(
+                    campaign.post.source_chat_id,
+                    ids=campaign.post.source_message_id,
+                )
+            except Exception:
+                pass
+
         broadcaster = Broadcaster(SessionPool())
         status, msg_id, error = await broadcaster._send_post(
             client=client,
             post=campaign.post,
             chat_id=db_user.tg_id,
             forward_mode=campaign.settings.forward_mode,
+            cached_source_msg=cached_source_msg,
         )
         await client.disconnect()
 
         if status.value == "success":
             await callback.bot.send_message(
                 db_user.tg_id,
-                f"✅ <b>Тест прошёл успешно!</b> Сообщение выше — это твой пост как он будет выглядеть.",
+                "✅ <b>Тест прошёл успешно!</b> Сообщение выше — это твой пост как он будет выглядеть.",
             )
         else:
             await callback.bot.send_message(
@@ -675,6 +690,7 @@ async def fsm_offset_value(message: Message, state: FSMContext) -> None:
 async def cb_campaign_stats(callback: CallbackQuery) -> None:
     assert callback.message and callback.data
     from sqlalchemy import func, select
+
     from db.models import BroadcastLog, BroadcastStatus
 
     campaign_id = uuid.UUID(callback.data.split(":", 2)[2])
@@ -684,7 +700,7 @@ async def cb_campaign_stats(callback: CallbackQuery) -> None:
             .where(BroadcastLog.campaign_id == campaign_id)
             .group_by(BroadcastLog.status)
         )
-        stats = dict(result.all())
+        stats: dict[BroadcastStatus, int] = {row[0]: row[1] for row in result.all()}
 
         # Last 5 errors
         last_errors_result = await session.execute(

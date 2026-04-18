@@ -33,7 +33,6 @@ def test_different_ciphertexts_per_call() -> None:
 def test_decrypt_wrong_key_raises() -> None:
     ciphertext = encrypt("secret")
     # Patch with a different key
-    import os
     from unittest.mock import patch
     new_key = Fernet.generate_key().decode()
     with patch("services.crypto._fernet", Fernet(new_key.encode())):
@@ -42,11 +41,11 @@ def test_decrypt_wrong_key_raises() -> None:
 
 
 def test_decrypt_garbage_raises() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidToken):
         decrypt("not_a_valid_fernet_token")
 
 
 def test_decrypt_truncated_raises() -> None:
     ciphertext = encrypt("value")
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidToken):
         decrypt(ciphertext[:10])

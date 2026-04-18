@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from bot.core.config import settings
 
@@ -18,7 +18,7 @@ async def check_subscriptions(bot: Bot, user_id: int) -> tuple[bool, list[int]]:
     for channel_id in settings.required_channel_ids:
         try:
             member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-            if member.status in ("left", "kicked", "banned"):
+            if member.status in ("left", "kicked"):
                 not_subscribed.append(channel_id)
         except (TelegramForbiddenError, TelegramBadRequest):
             # Bot is not in channel or channel doesn't exist — skip

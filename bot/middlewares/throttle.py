@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiogram import BaseMiddleware
 from aiogram.types import Message, TelegramObject
-from cachetools import TTLCache
+from cachetools import TTLCache  # type: ignore[import-untyped]
 
 
 class ThrottleMiddleware(BaseMiddleware):

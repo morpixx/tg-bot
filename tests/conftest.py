@@ -10,8 +10,6 @@ from cryptography.fernet import Fernet
 # ── Env vars must be set before any project imports ───────────────────────────
 os.environ.setdefault("BOT_TOKEN", "1234567890:AABBccDDeeFF")
 os.environ.setdefault("OWNER_ID", "123456789")
-os.environ.setdefault("TELETHON_API_ID", "12345678")
-os.environ.setdefault("TELETHON_API_HASH", "abcdef1234567890abcdef1234567890")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://bot:bot@localhost/bot_test")
 os.environ.setdefault("DATABASE_SYNC_URL", "postgresql+psycopg2://bot:bot@localhost/bot_test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")

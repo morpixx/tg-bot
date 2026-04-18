@@ -14,6 +14,7 @@ router = Router()
 async def cb_stats(callback: CallbackQuery, db_user: User) -> None:
     assert callback.message
     from sqlalchemy import func, select
+
     from db.models import BroadcastLog, Campaign
 
     async with async_session_factory() as session:

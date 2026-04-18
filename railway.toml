@@ -7,6 +7,7 @@ builder = "dockerfile"
 dockerfilePath = "docker/Dockerfile"
 
 [deploy]
+region = "europe-west4"
 # Wait for Postgres to accept connections, then migrate, then start the bot.
 preDeployCommand = "python scripts/migrate.py"
 startCommand = "python -m bot"

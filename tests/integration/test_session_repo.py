@@ -4,7 +4,6 @@ import pytest
 
 from db.repositories.session_repo import SessionRepository
 
-
 pytestmark = pytest.mark.integration
 
 

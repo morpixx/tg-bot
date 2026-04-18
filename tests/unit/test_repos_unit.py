@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, call
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from db.models import CampaignStatus, Post, PostType, TargetChat, TelegramSession, User
-from db.repositories.campaign_repo import CampaignRepository
+from db.models import Post, PostType, TargetChat, TelegramSession, User
 from db.repositories.chat_repo import ChatRepository
 from db.repositories.post_repo import PostRepository
 from db.repositories.session_repo import SessionRepository
 from db.repositories.user_repo import UserRepository
-
 
 # ── UserRepository ────────────────────────────────────────────────────────────
 
@@ -167,9 +164,6 @@ class TestChatRepo:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-from contextlib import contextmanager
-from unittest.mock import patch as stdlib_patch
 
 
 @contextmanager

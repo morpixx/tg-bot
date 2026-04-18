@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError
 
 from services.subscription import check_subscriptions, get_channel_invite_links
-
 
 # ── check_subscriptions ───────────────────────────────────────────────────────
 

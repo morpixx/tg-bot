@@ -4,7 +4,6 @@ import pytest
 
 from db.repositories.user_repo import UserRepository
 
-
 pytestmark = pytest.mark.integration
 
 

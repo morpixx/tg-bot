@@ -9,6 +9,7 @@ builder = "dockerfile"
 dockerfilePath = "docker/Dockerfile"
 
 [deploy]
+region = "europe-west4"
 startCommand = "python -m worker"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10

@@ -66,7 +66,7 @@ class QRLoginSession:
             return "success"
         except SessionPasswordNeededError:
             return "password_needed"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return "expired"
 
     async def refresh_qr(self) -> bytes:

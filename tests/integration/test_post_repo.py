@@ -7,7 +7,6 @@ import pytest
 from db.models import PostType
 from db.repositories.post_repo import PostRepository
 
-
 pytestmark = pytest.mark.integration
 
 

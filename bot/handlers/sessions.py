@@ -430,7 +430,7 @@ async def _save_session(
     async with async_session_factory() as db_session:
         async with db_session.begin():
             repo = SessionRepository(db_session)
-            tg_session = await repo.create(
+            await repo.create(
                 user_id=user_id,
                 name=session_name,
                 encrypted_session=auth_result.encrypted_session,
