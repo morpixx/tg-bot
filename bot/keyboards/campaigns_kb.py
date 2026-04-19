@@ -55,7 +55,7 @@ def campaign_view_kb(campaign_id: str, status: CampaignStatus) -> InlineKeyboard
     elif status == CampaignStatus.ACTIVE:
         rows.append([
             InlineKeyboardButton(text="⏸ Пауза", callback_data=f"campaign:pause:{campaign_id}"),
-            InlineKeyboardButton(text="⏹ Стоп", callback_data=f"campaign:stop:{campaign_id}"),
+            InlineKeyboardButton(text="⏹ Стоп", callback_data=f"campaign:stop:ask:{campaign_id}"),
         ])
         rows.append([InlineKeyboardButton(text="📡 Прогресс", callback_data=f"campaign:progress:{campaign_id}")])
         rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"campaign:settings:{campaign_id}")])
@@ -63,7 +63,7 @@ def campaign_view_kb(campaign_id: str, status: CampaignStatus) -> InlineKeyboard
     elif status == CampaignStatus.PAUSED:
         rows.append([
             InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"campaign:resume:{campaign_id}"),
-            InlineKeyboardButton(text="⏹ Стоп", callback_data=f"campaign:stop:{campaign_id}"),
+            InlineKeyboardButton(text="⏹ Стоп", callback_data=f"campaign:stop:ask:{campaign_id}"),
         ])
         rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"campaign:settings:{campaign_id}")])
 

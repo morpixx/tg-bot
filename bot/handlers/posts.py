@@ -13,7 +13,7 @@ from bot.keyboards.posts_kb import (
     post_view_kb,
     posts_list_kb,
 )
-from bot.keyboards.utils import back_kb
+from bot.keyboards.utils import back_kb, cancel_kb, esc, remember_prompt, reprompt
 from bot.states.fsm import PostAdd
 from db.models import PostType, User
 from db.repositories.post_repo import PostRepository
@@ -24,7 +24,9 @@ router = Router()
 
 @router.callback_query(F.data == "menu:posts")
 async def cb_posts_list(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         repo = PostRepository(session)
         posts = await repo.get_by_user(db_user.tg_id)
@@ -37,7 +39,9 @@ async def cb_posts_list(callback: CallbackQuery, db_user: User) -> None:
 
 @router.callback_query(F.data.startswith("posts:page:"))
 async def cb_posts_page(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     page = int(callback.data.split(":", 2)[2])
     async with async_session_factory() as session:
         repo = PostRepository(session)
@@ -48,7 +52,9 @@ async def cb_posts_page(callback: CallbackQuery, db_user: User) -> None:
 
 @router.callback_query(F.data.startswith("post:view:"))
 async def cb_post_view(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     post_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         repo = PostRepository(session)
@@ -65,13 +71,13 @@ async def cb_post_view(callback: CallbackQuery) -> None:
         PostType.MEDIA_GROUP: "🗂 Медиагруппа",
     }.get(post.type, "❓")
     text = (
-        f"📄 <b>{post.title}</b>\n\n"
+        f"📄 <b>{esc(post.title)}</b>\n\n"
         f"Тип: {type_label}\n"
         f"Добавлен: {post.created_at.strftime('%d.%m.%Y %H:%M')}"
     )
     if post.text:
         preview = post.text[:200] + ("..." if len(post.text) > 200 else "")
-        text += f"\n\n<i>Превью:</i>\n{preview}"
+        text += f"\n\n<i>Превью:</i>\n{esc(preview)}"
     await callback.message.edit_text(text, reply_markup=post_view_kb(post_id))
     await callback.answer()
 
@@ -80,7 +86,9 @@ async def cb_post_view(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "post:add")
 async def cb_post_add(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_text(
         "➕ <b>Добавить пост</b>\n\nВыбери способ:",
         reply_markup=post_add_type_kb(),
@@ -91,7 +99,9 @@ async def cb_post_add(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "post:add:forward", PostAdd.waiting_type_choice)
 async def cb_post_forward(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_text(
         "📤 <b>Форвард из канала</b>\n\n"
         "Перешли сюда любое сообщение из канала/чата.\n"
@@ -104,21 +114,25 @@ async def cb_post_forward(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(PostAdd.waiting_forward)
 async def fsm_post_receive_forward(message: Message, state: FSMContext) -> None:
     if not message.forward_from_chat and not message.forward_from:
-        await message.answer("⚠️ Это не пересланное сообщение. Перешли сообщение из канала:")
+        await reprompt(message, state, "⚠️ Это не пересланное сообщение. Перешли сообщение из канала:", reply_markup=cancel_kb("menu:posts"))
         return
     source_chat_id = (
         message.forward_from_chat.id if message.forward_from_chat else None
     )
     source_message_id = message.forward_from_message_id
     if not source_chat_id or not source_message_id:
-        await message.answer("⚠️ Не удалось определить источник. Убедись, что пересылаешь из публичного канала.")
+        await reprompt(message, state, "⚠️ Не удалось определить источник. Убедись, что пересылаешь из публичного канала.", reply_markup=cancel_kb("menu:posts"))
         return
     await state.update_data(
         post_type="forwarded",
         source_chat_id=source_chat_id,
         source_message_id=source_message_id,
     )
-    await message.answer("📝 Введи название поста для библиотеки (например: «Акция 14 апреля»):")
+    sent = await message.answer(
+        "📝 Введи название поста для библиотеки (например: «Акция 14 апреля»):",
+        reply_markup=cancel_kb("menu:posts"),
+    )
+    await remember_prompt(state, sent)
     await state.set_state(PostAdd.waiting_title)
 
 
@@ -126,7 +140,9 @@ async def fsm_post_receive_forward(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "post:add:manual", PostAdd.waiting_type_choice)
 async def cb_post_manual(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_text(
         "✍️ <b>Создать пост вручную</b>\n\nВыбери тип контента:",
         reply_markup=post_manual_type_kb(),
@@ -137,7 +153,9 @@ async def cb_post_manual(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("post:manual:"), PostAdd.waiting_manual_type)
 async def cb_post_manual_type(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     media_type = callback.data.split(":", 2)[2]
     await state.update_data(post_type=media_type)
     prompts = {
@@ -159,7 +177,7 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
 
     if post_type == "text":
         if not message.text:
-            await message.answer("⚠️ Нужен текст. Введи текст поста:")
+            await reprompt(message, state, "⚠️ Нужен текст. Введи текст поста:", reply_markup=cancel_kb("menu:posts"))
             return
         # Store entities for Premium emoji support
         entities_json = None
@@ -176,7 +194,7 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
     elif post_type in ("photo", "video", "document"):
         media = message.photo[-1] if message.photo else (message.video or message.document)
         if not media:
-            await message.answer(f"⚠️ Нужен медиафайл типа {post_type}:")
+            await reprompt(message, state, f"⚠️ Нужен медиафайл типа {post_type}:", reply_markup=cancel_kb("menu:posts"))
             return
         caption = message.caption or ""
         entities_json = None
@@ -216,7 +234,11 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
             media_filename=filename,
         )
 
-    await message.answer("📝 Введи название поста для библиотеки:")
+    sent = await message.answer(
+        "📝 Введи название поста для библиотеки:",
+        reply_markup=cancel_kb("menu:posts"),
+    )
+    await remember_prompt(state, sent)
     await state.set_state(PostAdd.waiting_title)
 
 
@@ -258,7 +280,7 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
                 )
 
     await message.answer(
-        f"✅ <b>Пост добавлен!</b>\n\n📄 {post.title}",
+        f"✅ <b>Пост добавлен!</b>\n\n📄 {esc(post.title)}",
         reply_markup=back_kb("menu:posts"),
     )
 
@@ -267,7 +289,9 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
 
 @router.callback_query(F.data.startswith("post:delete:confirm_ask:"))
 async def cb_post_delete_ask(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     post_id = callback.data.split(":", 3)[3]
     async with async_session_factory() as session:
         repo = PostRepository(session)
@@ -290,7 +314,9 @@ async def cb_post_delete_ask(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("post:delete:") & ~F.data.startswith("post:delete:confirm_ask:"))
 async def cb_post_delete(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     post_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():

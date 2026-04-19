@@ -17,7 +17,7 @@ from bot.keyboards.campaigns_kb import (
     session_select_kb,
 )
 from bot.keyboards.posts_kb import posts_list_kb
-from bot.keyboards.utils import back_button, back_kb
+from bot.keyboards.utils import back_button, back_kb, cancel_kb, esc, remember_prompt, reprompt
 from bot.states.fsm import CampaignCreate, CampaignSessionOffset, CampaignSettingsEdit
 from db.models import CampaignStatus, User
 from db.repositories.campaign_repo import CampaignRepository
@@ -47,7 +47,9 @@ _SETTING_PROMPTS: dict[str, str] = {
 
 @router.callback_query(F.data == "menu:campaigns")
 async def cb_campaigns_list(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         repo = CampaignRepository(session)
         campaigns = await repo.get_by_user(db_user.tg_id)
@@ -68,7 +70,9 @@ async def cb_campaigns_list(callback: CallbackQuery, db_user: User) -> None:
 
 @router.callback_query(F.data.startswith("campaign:view:"))
 async def cb_campaign_view(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         repo = CampaignRepository(session)
@@ -94,9 +98,9 @@ async def cb_campaign_view(callback: CallbackQuery) -> None:
     max_c = str(cfg.max_cycles) if cfg.max_cycles else "∞"
 
     text = (
-        f"📢 <b>{campaign.name}</b>\n\n"
+        f"📢 <b>{esc(campaign.name)}</b>\n\n"
         f"Статус: {status_label}\n"
-        f"Пост: <b>{campaign.post.title if campaign.post else '—'}</b>\n"
+        f"Пост: <b>{esc(campaign.post.title) if campaign.post else '—'}</b>\n"
         f"Сессий: {sessions_count}  |  Чатов: {chats_count}\n"
         f"Цикл: {campaign.current_cycle} / {max_c}\n\n"
         f"<i>⏱ {rand_info} · {mode} · 🔄 {cfg.delay_between_cycles} с между циклами</i>"
@@ -112,11 +116,15 @@ async def cb_campaign_view(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "campaign:create")
 async def cb_campaign_create(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await state.clear()
-    await callback.message.edit_text(
-        "📢 <b>Новая кампания</b>\n\nШаг 1 из 4: введи название кампании:"
+    sent = await callback.message.edit_text(
+        "📢 <b>Новая кампания</b>\n\nШаг 1 из 4: введи название кампании:",
+        reply_markup=cancel_kb("menu:campaigns"),
     )
+    await remember_prompt(state, sent)
     await state.set_state(CampaignCreate.waiting_name)
     await callback.answer()
 
@@ -125,7 +133,7 @@ async def cb_campaign_create(callback: CallbackQuery, state: FSMContext, db_user
 async def fsm_campaign_name(message: Message, state: FSMContext, db_user: User) -> None:
     name = (message.text or "").strip()
     if not name:
-        await message.answer("Название не может быть пустым:")
+        await reprompt(message, state, "⚠️ Название не может быть пустым:", reply_markup=cancel_kb("menu:campaigns"))
         return
     await state.update_data(campaign_name=name)
 
@@ -148,7 +156,9 @@ async def fsm_campaign_name(message: Message, state: FSMContext, db_user: User) 
 
 @router.callback_query(F.data.startswith("post:view:"), CampaignCreate.waiting_post)
 async def fsm_campaign_post(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     post_id = callback.data.split(":", 2)[2]
     await state.update_data(post_id=post_id, selected_sessions=[], selected_chats=[])
 
@@ -174,7 +184,9 @@ async def fsm_campaign_post(callback: CallbackQuery, state: FSMContext, db_user:
 
 @router.callback_query(F.data.startswith("csel:session:"), CampaignCreate.waiting_sessions)
 async def fsm_toggle_session(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.data
+    if not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 2)[2]
     data = await state.get_data()
     selected: list[str] = list(data.get("selected_sessions", []))
@@ -187,7 +199,9 @@ async def fsm_toggle_session(callback: CallbackQuery, state: FSMContext, db_user
     async with async_session_factory() as session:
         repo = SessionRepository(session)
         sessions = await repo.get_by_user(db_user.tg_id)
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_reply_markup(
         reply_markup=session_select_kb(sessions, set(selected))
     )
@@ -196,7 +210,9 @@ async def fsm_toggle_session(callback: CallbackQuery, state: FSMContext, db_user
 
 @router.callback_query(F.data == "csel:sessions:done", CampaignCreate.waiting_sessions)
 async def fsm_sessions_done(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     data = await state.get_data()
     if not data.get("selected_sessions"):
         await callback.answer("Выбери хотя бы одну сессию!", show_alert=True)
@@ -224,7 +240,9 @@ async def fsm_sessions_done(callback: CallbackQuery, state: FSMContext, db_user:
 
 @router.callback_query(F.data.startswith("csel:chat:"), CampaignCreate.waiting_chats)
 async def fsm_toggle_chat(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.data
+    if not callback.data:
+        await callback.answer()
+        return
     chat_id = callback.data.split(":", 2)[2]
     data = await state.get_data()
     selected: list[str] = list(data.get("selected_chats", []))
@@ -237,7 +255,9 @@ async def fsm_toggle_chat(callback: CallbackQuery, state: FSMContext, db_user: U
     async with async_session_factory() as session:
         repo = ChatRepository(session)
         chats = await repo.get_by_user(db_user.tg_id)
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_reply_markup(
         reply_markup=chat_select_kb(chats, set(selected))
     )
@@ -251,7 +271,9 @@ async def fsm_select_all_chats(callback: CallbackQuery, state: FSMContext, db_us
         chats = await repo.get_by_user(db_user.tg_id)
     all_ids = [str(c.id) for c in chats]
     await state.update_data(selected_chats=all_ids)
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_reply_markup(
         reply_markup=chat_select_kb(chats, set(all_ids))
     )
@@ -264,14 +286,18 @@ async def fsm_deselect_all_chats(callback: CallbackQuery, state: FSMContext, db_
     async with async_session_factory() as session:
         repo = ChatRepository(session)
         chats = await repo.get_by_user(db_user.tg_id)
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_reply_markup(reply_markup=chat_select_kb(chats, set()))
     await callback.answer("Выбор снят")
 
 
 @router.callback_query(F.data == "csel:chats:done", CampaignCreate.waiting_chats)
 async def fsm_chats_done(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     data = await state.get_data()
     if not data.get("selected_chats"):
         await callback.answer("Выбери хотя бы один чат!", show_alert=True)
@@ -325,7 +351,9 @@ async def fsm_chats_done(callback: CallbackQuery, state: FSMContext, db_user: Us
 
 @router.callback_query(F.data.startswith("campaign:settings:"))
 async def cb_campaign_settings(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         repo = CampaignRepository(session)
@@ -335,7 +363,7 @@ async def cb_campaign_settings(callback: CallbackQuery) -> None:
         return
     cfg = campaign.settings
     await callback.message.edit_text(
-        f"⚙️ <b>Настройки кампании</b> · <i>{campaign.name}</i>\n\n"
+        f"⚙️ <b>Настройки кампании</b> · <i>{esc(campaign.name)}</i>\n\n"
         "Нажми кнопку чтобы изменить значение:",
         reply_markup=campaign_settings_kb(campaign_id, cfg),
     )
@@ -344,7 +372,9 @@ async def cb_campaign_settings(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("cs:"))
 async def cb_setting_edit(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.data and callback.message
+    if not callback.data or not callback.message:
+        await callback.answer()
+        return
     parts = callback.data.split(":")
     if len(parts) != 3:
         await callback.answer()
@@ -374,7 +404,10 @@ async def cb_setting_edit(callback: CallbackQuery, state: FSMContext) -> None:
 
     prompt = _SETTING_PROMPTS.get(field, "Введи значение:")
     await state.update_data(setting_field=field, setting_campaign_id=campaign_id)
-    await callback.message.edit_text(prompt)
+    sent = await callback.message.edit_text(
+        prompt, reply_markup=cancel_kb(f"campaign:settings:{campaign_id}")
+    )
+    await remember_prompt(state, sent)
     await state.set_state(CampaignSettingsEdit.waiting_value)
     await callback.answer()
 
@@ -400,7 +433,7 @@ async def fsm_setting_value(message: Message, state: FSMContext) -> None:
         else:
             value = raw
     except (ValueError, KeyError):
-        await message.answer("⚠️ Неверный формат. Введи число:")
+        await reprompt(message, state, "⚠️ Неверный формат. Введи число:")
         return
 
     async with async_session_factory() as session:
@@ -423,7 +456,9 @@ async def fsm_setting_value(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("campaign:start:"))
 async def cb_campaign_start(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():
@@ -441,7 +476,9 @@ async def cb_campaign_start(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:pause:"))
 async def cb_campaign_pause(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():
@@ -456,7 +493,9 @@ async def cb_campaign_pause(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:resume:"))
 async def cb_campaign_resume(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():
@@ -469,9 +508,31 @@ async def cb_campaign_resume(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("campaign:stop:"))
+@router.callback_query(F.data.startswith("campaign:stop:ask:"))
+async def cb_campaign_stop_ask(callback: CallbackQuery) -> None:
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
+    campaign_id = callback.data.split(":", 3)[3]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Остановить", callback_data=f"campaign:stop:{campaign_id}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"campaign:view:{campaign_id}"),
+        ]
+    ])
+    await callback.message.edit_text(
+        "⏹ <b>Остановить кампанию?</b>\n\n"
+        "Она перейдёт в STOPPED. Для повторного запуска нужен Restart (цикл сбросится).",
+        reply_markup=kb,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("campaign:stop:") & ~F.data.startswith("campaign:stop:ask:"))
 async def cb_campaign_stop(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():
@@ -486,7 +547,9 @@ async def cb_campaign_stop(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:restart:"))
 async def cb_campaign_restart(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():
@@ -507,7 +570,9 @@ async def cb_campaign_restart(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:test:"))
 async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message and callback.data and callback.bot
+    if not callback.message or not callback.data or not callback.bot:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
 
     async with async_session_factory() as session:
@@ -591,7 +656,9 @@ async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
 
 @router.callback_query(F.data.startswith("campaign:progress:"))
 async def cb_campaign_progress(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id_str = callback.data.split(":", 2)[2]
     campaign_id = uuid.UUID(campaign_id_str)
 
@@ -632,7 +699,9 @@ async def cb_campaign_progress(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:offsets:"))
 async def cb_campaign_offsets(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         repo = CampaignRepository(session)
@@ -644,7 +713,7 @@ async def cb_campaign_offsets(callback: CallbackQuery, state: FSMContext) -> Non
     # Stash campaign_id so the shorter coe:<session_id> callback can find it.
     await state.update_data(offset_campaign_id=campaign_id)
     await callback.message.edit_text(
-        f"⏱ <b>Офсеты сессий</b> · <i>{campaign.name}</i>\n\n"
+        f"⏱ <b>Офсеты сессий</b> · <i>{esc(campaign.name)}</i>\n\n"
         "Задай задержку для каждой сессии от момента старта кампании, "
         "чтобы они начинали работу в разное время.",
         reply_markup=session_offsets_kb(campaign_id, campaign.campaign_sessions),
@@ -654,7 +723,9 @@ async def cb_campaign_offsets(callback: CallbackQuery, state: FSMContext) -> Non
 
 @router.callback_query(F.data.startswith("coe:"))
 async def cb_offset_edit(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 1)[1]
     data = await state.get_data()
     campaign_id = data.get("offset_campaign_id")
@@ -663,9 +734,11 @@ async def cb_offset_edit(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.update_data(offset_campaign_id=campaign_id, offset_session_id=session_id)
-    await callback.message.edit_text(
-        "⏱ Введи задержку для этой сессии в секундах (например: <code>120</code>):"
+    sent = await callback.message.edit_text(
+        "⏱ Введи задержку для этой сессии в секундах (например: <code>120</code>):",
+        reply_markup=cancel_kb(f"campaign:offsets:{campaign_id}"),
     )
+    await remember_prompt(state, sent)
     await state.set_state(CampaignSessionOffset.waiting_offset)
     await callback.answer()
 
@@ -682,7 +755,7 @@ async def fsm_offset_value(message: Message, state: FSMContext) -> None:
         if offset < 0:
             raise ValueError
     except (ValueError, KeyError):
-        await message.answer("⚠️ Неверный формат. Введи положительное число секунд:")
+        await reprompt(message, state, "⚠️ Неверный формат. Введи положительное число секунд:")
         return
 
     async with async_session_factory() as session:
@@ -705,7 +778,9 @@ async def fsm_offset_value(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("campaign:stats:"))
 async def cb_campaign_stats(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     from sqlalchemy import func, select
 
     from db.models import BroadcastLog, BroadcastStatus
@@ -765,7 +840,9 @@ async def cb_campaign_stats(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:edit:"))
 async def cb_campaign_edit(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Сменить пост", callback_data=f"campaign:edit:post:{campaign_id}")],
@@ -784,7 +861,9 @@ async def cb_campaign_edit(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:delete:") & ~F.data.startswith("campaign:delete:confirm:"))
 async def cb_campaign_delete(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -801,7 +880,9 @@ async def cb_campaign_delete(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:delete:confirm:"))
 async def cb_campaign_delete_confirm(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 3)[3]
     async with async_session_factory() as session:
         async with session.begin():
@@ -815,7 +896,9 @@ async def cb_campaign_delete_confirm(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("campaign:clone:"))
 async def cb_campaign_clone(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         async with session.begin():

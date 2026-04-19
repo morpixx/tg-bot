@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.keyboards.settings_kb import global_settings_kb
+from bot.keyboards.utils import cancel_kb, remember_prompt, reprompt
 from bot.states.fsm import GlobalSettingsEdit
 from db.models import User
 from db.repositories.user_settings_repo import UserSettingsRepository
@@ -29,7 +30,9 @@ _PROMPTS: dict[str, str] = {
 
 @router.callback_query(F.data == "menu:settings")
 async def cb_settings(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         repo = UserSettingsRepository(session)
         cfg = await repo.get_or_create(db_user.tg_id)
@@ -44,7 +47,9 @@ async def cb_settings(callback: CallbackQuery, db_user: User) -> None:
 
 @router.callback_query(F.data.startswith("gs:"))
 async def cb_setting_select(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     field = callback.data.split(":", 1)[1]
 
     # Toggle booleans inline without asking for input
@@ -62,7 +67,8 @@ async def cb_setting_select(callback: CallbackQuery, state: FSMContext, db_user:
 
     prompt = _PROMPTS.get(field, "Введи значение:")
     await state.update_data(gs_field=field)
-    await callback.message.edit_text(prompt)
+    sent = await callback.message.edit_text(prompt, reply_markup=cancel_kb("menu:settings"))
+    await remember_prompt(state, sent)
     await state.set_state(GlobalSettingsEdit.waiting_value)
     await callback.answer()
 
@@ -86,7 +92,7 @@ async def fsm_gs_value(message: Message, state: FSMContext, db_user: User) -> No
         else:
             value = raw
     except (ValueError, KeyError):
-        await message.answer("⚠️ Неверный формат. Попробуй ещё раз:")
+        await reprompt(message, state, "⚠️ Неверный формат. Попробуй ещё раз:", reply_markup=cancel_kb("menu:settings"))
         return
 
     async with async_session_factory() as session:

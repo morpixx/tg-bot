@@ -221,8 +221,8 @@ class Broadcaster:
             async with async_session_factory() as session:
                 async with session.begin():
                     session.add_all(logs)
-        except Exception as e:
-            log.error("Failed to flush broadcast logs", error=str(e))
+        except Exception:
+            log.exception("Failed to flush broadcast logs")
 
     async def _send_post(
         self,
@@ -239,7 +239,9 @@ class Broadcaster:
                     messages=post.source_message_id,
                     from_peer=post.source_chat_id,
                 )
-                msg_id = result[0].id if result else None
+                # Telethon returns a single Message for a single int, list for a list.
+                first = result[0] if isinstance(result, list) else result
+                msg_id = first.id if first else None
 
             elif post.type == PostType.FORWARDED and not forward_mode:
                 msg = cached_source_msg
@@ -290,7 +292,7 @@ class Broadcaster:
             return BroadcastStatus.SKIPPED, None, str(e)
 
         except Exception as e:
-            log.error("Send error", chat_id=chat_id, error=str(e))
+            log.exception("Send error", chat_id=chat_id)
             return BroadcastStatus.FAILED, None, str(e)
 
 

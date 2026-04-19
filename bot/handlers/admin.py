@@ -53,7 +53,9 @@ async def cmd_admin(message: Message) -> None:
 
 @router.callback_query(F.data == "admin:panel")
 async def cb_admin_panel(callback: CallbackQuery) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         user_repo = UserRepository(session)
         users = await user_repo.list_active()
@@ -68,7 +70,9 @@ async def cb_admin_panel(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "admin:operators")
 async def cb_admin_operators(callback: CallbackQuery) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         user_repo = UserRepository(session)
         users = await user_repo.list_active()
@@ -96,7 +100,9 @@ async def cb_admin_operators(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("admin:operator:"))
 async def cb_admin_operator_detail(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     operator_id = int(callback.data.split(":", 2)[2])
 
     async with async_session_factory() as session:
@@ -137,7 +143,9 @@ async def cb_admin_operator_detail(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("admin:block:"))
 async def cb_admin_block(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     operator_id = int(callback.data.split(":", 2)[2])
     async with async_session_factory() as session:
         async with session.begin():
@@ -154,7 +162,9 @@ async def cb_admin_block(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("admin:stopall:"))
 async def cb_admin_stop_all(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     operator_id = int(callback.data.split(":", 2)[2])
 
     async with async_session_factory() as session:
@@ -183,7 +193,9 @@ async def cb_admin_stop_all(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "admin:campaigns")
 async def cb_admin_all_campaigns(callback: CallbackQuery) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         repo = CampaignRepository(session)
         active = await repo.get_active()
@@ -212,7 +224,9 @@ async def cb_admin_all_campaigns(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("admin:forcestop:"))
 async def cb_admin_force_stop(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     campaign_id = uuid.UUID(callback.data.split(":", 2)[2])
 
     from worker.broadcaster import request_stop
@@ -245,7 +259,9 @@ async def cmd_notify_all(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "admin:notify")
 async def cb_admin_notify(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await callback.message.edit_text(
         "📨 <b>Рассылка всем пользователям</b>\n\n"
         "Отправь сообщение (текст, фото, видео — любой тип).\n"

@@ -112,9 +112,6 @@ class Post(Base):
     text: Mapped[str | None] = mapped_column(Text)
     # Serialized JSON list of entities (for Premium emoji support)
     text_entities: Mapped[str | None] = mapped_column(Text)
-    # Legacy: Bot API file_id. Not used by new posts — Telethon can't send
-    # document-style bot file_ids. Kept nullable for old rows.
-    media_file_id: Mapped[str | None] = mapped_column(String(512))
     media_type: Mapped[str | None] = mapped_column(String(32))
     # Raw bytes downloaded via Bot API on post creation; sent via Telethon as BytesIO.
     media_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)

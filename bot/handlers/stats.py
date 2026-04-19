@@ -12,7 +12,9 @@ router = Router()
 
 @router.callback_query(F.data == "menu:stats")
 async def cb_stats(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     from sqlalchemy import func, select
 
     from db.models import BroadcastLog, Campaign

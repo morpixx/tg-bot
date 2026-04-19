@@ -85,7 +85,9 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "menu:main")
 async def cb_main_menu(callback: CallbackQuery) -> None:
-    assert callback.message and callback.from_user
+    if not callback.message or not callback.from_user:
+        await callback.answer()
+        return
     is_owner = callback.from_user.id == settings.owner_id
     name = callback.from_user.full_name or callback.from_user.username or "Пользователь"
     text = await _menu_text(name, callback.from_user.id)
@@ -98,7 +100,9 @@ async def cb_main_menu(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "check_subscription")
 async def cb_check_subscription(callback: CallbackQuery) -> None:
-    assert callback.from_user and callback.message and callback.bot
+    if not callback.from_user or not callback.message or not callback.bot:
+        await callback.answer()
+        return
     subscribed, _ = await check_subscriptions(callback.bot, callback.from_user.id)
     if subscribed:
         is_owner = callback.from_user.id == settings.owner_id

@@ -26,6 +26,7 @@ async def test_create_manual_text(db_session, db_user) -> None:
     assert post.type == PostType.TEXT
     assert post.text == "Hello!"
     assert post.media_bytes is None
+    assert post.media_filename is None
 
 
 async def test_create_manual_photo(db_session, db_user) -> None:

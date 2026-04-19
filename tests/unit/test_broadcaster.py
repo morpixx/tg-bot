@@ -74,6 +74,18 @@ class TestSendPost:
         assert error is None
         client.forward_messages.assert_called_once()
 
+    async def test_forwarded_single_message_result(self, broadcaster) -> None:
+        """Telethon returns a single Message (not list) when forwarding by single int."""
+        client = self._make_client()
+        single_msg = MagicMock()
+        single_msg.id = 777
+        client.forward_messages.return_value = single_msg  # not subscriptable
+        post = self._make_post(PostType.FORWARDED)
+        status, msg_id, error = await broadcaster._send_post(client, post, -200, forward_mode=True)
+        assert status == BroadcastStatus.SUCCESS
+        assert msg_id == 777
+        assert error is None
+
     async def test_forwarded_copy_mode(self, broadcaster) -> None:
         client = self._make_client()
         post = self._make_post(PostType.FORWARDED)

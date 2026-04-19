@@ -27,7 +27,10 @@ class PostAdd(StatesGroup):
 
 
 class ChatAdd(StatesGroup):
-    waiting_chat = State()              # chat username / id
+    waiting_method = State()            # native picker / forward / link
+    waiting_picker = State()            # native chat-shared picker
+    waiting_forward = State()           # forwarded message from target chat
+    waiting_link = State()              # @username / t.me/... / numeric ID
 
 
 class ChatImport(StatesGroup):

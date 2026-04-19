@@ -214,7 +214,7 @@ class TestCampaignsKb:
         kb = campaign_view_kb("test-id", CampaignStatus.ACTIVE)
         datas = [b.callback_data for row in kb.inline_keyboard for b in row]
         assert "campaign:pause:test-id" in datas
-        assert "campaign:stop:test-id" in datas
+        assert "campaign:stop:ask:test-id" in datas
 
     def test_view_paused_has_resume(self) -> None:
         from bot.keyboards.campaigns_kb import campaign_view_kb

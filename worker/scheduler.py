@@ -7,6 +7,7 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot.core.config import settings
+from bot.keyboards.utils import esc
 from db.repositories.campaign_repo import CampaignRepository
 from db.repositories.session_repo import SessionRepository
 from db.session import async_session_factory
@@ -90,10 +91,10 @@ class WorkerScheduler:
                 try:
                     await bot.send_message(
                         tg_session.user_id,
-                        f"⚠️ Сессия <b>{tg_session.name}</b> отключилась. Необходимо переавторизоваться.",
+                        f"⚠️ Сессия <b>{esc(tg_session.name)}</b> отключилась. Необходимо переавторизоваться.",
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning("Failed to notify user of dead session", user_id=tg_session.user_id, error=str(e))
                 async with async_session_factory() as db_session:
                     async with db_session.begin():
                         repo2 = SessionRepository(db_session)

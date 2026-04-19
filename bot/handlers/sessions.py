@@ -18,7 +18,7 @@ from bot.keyboards.sessions_kb import (
     session_view_kb,
     sessions_list_kb,
 )
-from bot.keyboards.utils import back_kb
+from bot.keyboards.utils import back_kb, cancel_kb, esc, remember_prompt, reprompt
 from bot.states.fsm import SessionAddPhone, SessionAddQR, SessionRename
 from db.models import User
 from db.repositories.session_repo import SessionRepository
@@ -33,6 +33,16 @@ log = structlog.get_logger()
 _qr_sessions: dict[int, QRLoginSession] = {}
 _qr_tasks: dict[int, asyncio.Task] = {}  # type: ignore[type-arg]
 _phone_sessions: dict[int, PhoneLoginSession] = {}
+
+
+def _sanitize_otp(raw: str) -> str:
+    """Strip all non-digits from an OTP input.
+
+    Users are instructed to insert separators (e.g. `1-2-3-4-5`) to dodge
+    Telegram's anti-phishing filter which invalidates any 5-digit sequence
+    typed inside a Telegram chat.
+    """
+    return "".join(c for c in (raw or "") if c.isdigit())
 
 
 def _format_wait(seconds_str: str) -> str:
@@ -75,11 +85,11 @@ def _render_session_view(tg_session) -> str:  # type: ignore[no-untyped-def]
     premium = "💎 Premium" if tg_session.has_premium else "нет"
     status = "🟢 Активна" if tg_session.is_active else "🔴 Отключена"
     return (
-        f"📱 <b>{tg_session.name}</b>\n\n"
+        f"📱 <b>{esc(tg_session.name)}</b>\n\n"
         f"🔌 Статус: {status}\n"
-        f"👤 Аккаунт: {tg_session.account_name or '—'}\n"
-        f"🆔 @{tg_session.account_username or '—'}\n"
-        f"📞 {tg_session.phone or '—'}\n"
+        f"👤 Аккаунт: {esc(tg_session.account_name) or '—'}\n"
+        f"🆔 @{esc(tg_session.account_username) or '—'}\n"
+        f"📞 {esc(tg_session.phone) or '—'}\n"
         f"⭐ Premium: {premium}\n"
         f"🕐 Добавлена: {tg_session.created_at.strftime('%d.%m.%Y %H:%M')}"
     )
@@ -89,7 +99,9 @@ def _render_session_view(tg_session) -> str:  # type: ignore[no-untyped-def]
 
 @router.callback_query(F.data == "menu:sessions")
 async def cb_sessions_list(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     async with async_session_factory() as session:
         repo = SessionRepository(session)
         sessions = await repo.get_all_by_user(db_user.tg_id)
@@ -107,7 +119,9 @@ async def cb_sessions_list(callback: CallbackQuery, db_user: User) -> None:
 
 @router.callback_query(F.data.startswith("session:view:"))
 async def cb_session_view(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
         repo = SessionRepository(session)
@@ -130,14 +144,17 @@ async def cb_session_view(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("session:rename:"))
 async def cb_session_rename(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 2)[2]
     await state.clear()
     await state.update_data(rename_session_id=session_id)
-    await callback.message.answer(
+    sent = await callback.message.answer(
         "✏️ Введи новое название для сессии:",
-        reply_markup=back_kb(f"session:view:{session_id}"),
+        reply_markup=cancel_kb(f"session:view:{session_id}"),
     )
+    await remember_prompt(state, sent)
     await state.set_state(SessionRename.waiting_name)
     await callback.answer()
 
@@ -146,10 +163,10 @@ async def cb_session_rename(callback: CallbackQuery, state: FSMContext) -> None:
 async def fsm_rename(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
     if not name:
-        await message.answer("Название не может быть пустым. Введи ещё раз:")
+        await reprompt(message, state, "⚠️ Название не может быть пустым. Введи ещё раз:", reply_markup=cancel_kb("menu:sessions"))
         return
     if len(name) > 64:
-        await message.answer("Слишком длинное (макс 64 символа). Введи короче:")
+        await reprompt(message, state, "⚠️ Слишком длинное (макс 64 символа). Введи короче:", reply_markup=cancel_kb("menu:sessions"))
         return
     data = await state.get_data()
     session_id = data.get("rename_session_id")
@@ -175,7 +192,9 @@ async def fsm_rename(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "session:add")
 async def cb_session_add(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await state.clear()
     await callback.message.edit_text(
         "➕ <b>Добавить сессию</b>\n\nВыбери способ авторизации:",
@@ -234,7 +253,9 @@ async def _send_qr_screen(
 
 @router.callback_query(F.data == "session:add:qr")
 async def cb_session_add_qr(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await state.clear()
 
     user_id = db_user.tg_id
@@ -315,7 +336,12 @@ async def _watch_qr_auth(user_id: int, chat_id: int, state: FSMContext) -> None:
         return
 
     if outcome == "password_needed":
-        await bot.send_message(chat_id, "🔐 Введи пароль двухфакторной аутентификации:")
+        sent = await bot.send_message(
+            chat_id,
+            "🔐 Введи пароль двухфакторной аутентификации:",
+            reply_markup=cancel_kb("menu:sessions"),
+        )
+        await remember_prompt(state, sent)
         await state.set_state(SessionAddQR.waiting_2fa)
         return
 
@@ -378,7 +404,9 @@ async def _cleanup_after_flow(user_id: int, state: FSMContext | None) -> None:
 
 @router.callback_query(F.data == "session:qr:cancel")
 async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await _cleanup_after_flow(db_user.tg_id, state)
     try:
         await callback.message.edit_caption(caption="❌ Авторизация отменена.")
@@ -411,13 +439,16 @@ async def fsm_qr_2fa(message: Message, state: FSMContext, db_user: User) -> None
 
 @router.callback_query(F.data == "session:add:phone")
 async def cb_session_add_phone(callback: CallbackQuery, state: FSMContext) -> None:
-    assert callback.message
+    if not callback.message:
+        await callback.answer()
+        return
     await state.clear()
     text = "📞 <b>Авторизация по номеру</b>\n\nВведи номер в формате <code>+7XXXXXXXXXX</code>:"
     try:
-        await callback.message.edit_text(text, reply_markup=back_kb("menu:sessions"))
+        sent = await callback.message.edit_text(text, reply_markup=cancel_kb("menu:sessions"))
     except Exception:
-        await callback.message.answer(text, reply_markup=back_kb("menu:sessions"))
+        sent = await callback.message.answer(text, reply_markup=cancel_kb("menu:sessions"))
+    await remember_prompt(state, sent)
     await state.set_state(SessionAddPhone.waiting_phone)
     await callback.answer()
 
@@ -426,7 +457,12 @@ async def cb_session_add_phone(callback: CallbackQuery, state: FSMContext) -> No
 async def fsm_phone_number(message: Message, state: FSMContext, db_user: User) -> None:
     phone = (message.text or "").strip()
     if not phone.startswith("+") or len(phone) < 8:
-        await message.answer("Неверный формат. Нужно <code>+7XXXXXXXXXX</code>:")
+        await reprompt(
+            message,
+            state,
+            "⚠️ Неверный формат. Нужно <code>+7XXXXXXXXXX</code>:",
+            reply_markup=cancel_kb("menu:sessions"),
+        )
         return
     auth = PhoneLoginSession()
     _phone_sessions[db_user.tg_id] = auth
@@ -439,20 +475,34 @@ async def fsm_phone_number(message: Message, state: FSMContext, db_user: User) -
         await state.clear()
         await status.edit_text(f"❌ {error}", reply_markup=phone_retry_kb())
         return
-    await status.edit_text(
-        "📨 Код отправлен в Telegram.\n\n"
-        "Введи код (цифры без пробелов, например <code>12345</code>):"
+    sent = await status.edit_text(
+        "📨 <b>Код отправлен в Telegram.</b>\n\n"
+        "⚠️ Telegram блокирует вход, если 5-значный код введён внутри "
+        "Telegram-чата как есть. Вставь <b>любые разделители между цифрами</b>, "
+        "например <code>1-2-3-4-5</code> или <code>1a2b3c4d5</code> — бот уберёт "
+        "лишнее и отправит чистый код.",
+        reply_markup=cancel_kb("menu:sessions"),
     )
+    await remember_prompt(state, sent)
     await state.set_state(SessionAddPhone.waiting_code)
 
 
 @router.message(SessionAddPhone.waiting_code)
 async def fsm_phone_code(message: Message, state: FSMContext, db_user: User) -> None:
-    code = (message.text or "").strip()
+    code = _sanitize_otp(message.text or "")
     auth = _phone_sessions.get(db_user.tg_id)
     if not auth:
         await message.answer("❌ Сессия устарела. Начни заново.", reply_markup=back_kb("menu:sessions"))
         await state.clear()
+        return
+    if len(code) != 5:
+        await reprompt(
+            message,
+            state,
+            "⚠️ Нужно 5 цифр. Вставь код с разделителями, например "
+            "<code>1-2-3-4-5</code> или <code>1a2b3c4d5</code>:",
+            reply_markup=cancel_kb("menu:sessions"),
+        )
         return
     result, error = await auth.submit_code(code)
     if result == "success":
@@ -460,10 +510,14 @@ async def fsm_phone_code(message: Message, state: FSMContext, db_user: User) -> 
         _phone_sessions.pop(db_user.tg_id, None)
         await _save_session(db_user.tg_id, message.chat.id, state, auth_result, message)
     elif result == "password_needed":
-        await message.answer("🔐 Введи пароль двухфакторной аутентификации:")
+        sent = await message.answer(
+            "🔐 Введи пароль двухфакторной аутентификации:",
+            reply_markup=cancel_kb("menu:sessions"),
+        )
+        await remember_prompt(state, sent)
         await state.set_state(SessionAddPhone.waiting_2fa)
     else:
-        await message.answer(f"❌ {error}")
+        await reprompt(message, state, f"❌ {error}", reply_markup=cancel_kb("menu:sessions"))
 
 
 @router.message(SessionAddPhone.waiting_2fa)
@@ -476,7 +530,12 @@ async def fsm_phone_2fa(message: Message, state: FSMContext, db_user: User) -> N
         return
     success, error = await auth.submit_password(password)
     if not success:
-        await message.answer(f"❌ Неверный пароль: {error}\nПопробуй ещё раз:")
+        await reprompt(
+            message,
+            state,
+            f"❌ Неверный пароль: {error}\nПопробуй ещё раз:",
+            reply_markup=cancel_kb("menu:sessions"),
+        )
         return
     auth_result = await auth.finalize()
     _phone_sessions.pop(db_user.tg_id, None)
@@ -487,7 +546,9 @@ async def fsm_phone_2fa(message: Message, state: FSMContext, db_user: User) -> N
 
 @router.callback_query(F.data.startswith("session:check:"))
 async def cb_session_check(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 2)[2]
     await callback.answer("⏳ Проверяю...", show_alert=False)
 
@@ -524,7 +585,9 @@ async def cb_session_check(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("session:delete:") & ~F.data.startswith("session:delete:confirm:"))
 async def cb_session_delete(callback: CallbackQuery) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 2)[2]
     await callback.message.edit_text(
         "🗑 <b>Удалить сессию?</b>\n\nЭто действие необратимо. Активные кампании с этой сессией будут остановлены.",
@@ -535,7 +598,9 @@ async def cb_session_delete(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("session:delete:confirm:"))
 async def cb_session_delete_confirm(callback: CallbackQuery, db_user: User) -> None:
-    assert callback.message and callback.data
+    if not callback.message or not callback.data:
+        await callback.answer()
+        return
     session_id = callback.data.split(":", 3)[3]
     async with async_session_factory() as session:
         async with session.begin():
@@ -600,8 +665,8 @@ async def _save_session(
     premium = "💎 Premium" if auth_result.has_premium else "нет"
     text = (
         f"✅ <b>Сессия добавлена!</b>\n\n"
-        f"📱 {session_name}\n"
-        f"👤 {auth_result.account_name or '—'}\n"
+        f"📱 {esc(session_name)}\n"
+        f"👤 {esc(auth_result.account_name) or '—'}\n"
         f"⭐ Premium: {premium}\n\n"
         f"<i>Переименовать можно в карточке сессии.</i>"
     )
