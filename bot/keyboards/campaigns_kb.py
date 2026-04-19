@@ -59,7 +59,10 @@ def campaign_view_kb(campaign_id: str, status: CampaignStatus) -> InlineKeyboard
         InlineKeyboardButton(text="📈 Статистика", callback_data=f"campaign:stats:{campaign_id}"),
         InlineKeyboardButton(text="⏱ Офсеты", callback_data=f"campaign:offsets:{campaign_id}"),
     ])
-    rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"campaign:delete:{campaign_id}")])
+    rows.append([
+        InlineKeyboardButton(text="📑 Клонировать", callback_data=f"campaign:clone:{campaign_id}"),
+        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"campaign:delete:{campaign_id}"),
+    ])
     rows.append([back_button("menu:campaigns")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

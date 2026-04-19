@@ -141,24 +141,53 @@ class PhoneLoginSession:
         """
         Send verification code to phone.
         Returns (success, error_message).
+
+        On RECAPTCHA we transparently retry once with a fresh iOS device
+        fingerprint — opentele2's API.TelegramIOS.Generate() yields a new
+        device each call, and that often clears the soft block without
+        having to drop the user onto the QR path.
         """
         self._phone = phone
-        try:
-            await self._client.connect()
-            result = await self._client.send_code_request(phone)
-            self._phone_code_hash = result.phone_code_hash
+
+        async def _attempt() -> tuple[bool, str]:
+            try:
+                if not self._client.is_connected():
+                    await self._client.connect()
+                result = await self._client.send_code_request(phone)
+                self._phone_code_hash = result.phone_code_hash
+                return True, ""
+            except FloodWaitError as e:
+                return False, f"flood:{e.seconds}"
+            except Exception as e:
+                return False, str(e)
+
+        ok, err = await _attempt()
+        if ok:
             return True, ""
-        except FloodWaitError as e:
-            return False, f"Слишком много попыток. Подождите {e.seconds} сек."
-        except Exception as e:
-            err = str(e)
-            if "RECAPTCHA" in err or "recaptcha" in err.lower():
+
+        if err.startswith("flood:"):
+            seconds = err.split(":", 1)[1]
+            return False, f"Слишком много попыток. Подождите {seconds} сек."
+
+        if "RECAPTCHA" in err or "recaptcha" in err.lower():
+            # Rebuild client with a new iOS device fingerprint and retry once.
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+            self._client = _make_client()
+            ok2, err2 = await _attempt()
+            if ok2:
+                return True, ""
+            if "RECAPTCHA" in err2 or "recaptcha" in err2.lower():
                 return False, (
-                    "Telegram заблокировал вход по номеру телефона с данного IP/устройства "
-                    "(требует CAPTCHA).\n\n"
-                    "Используй <b>QR-код</b> — он не имеет таких ограничений."
+                    "⚠️ Telegram требует CAPTCHA для этого номера.\n\n"
+                    "Можно: 1) попробовать ещё раз через пару минут, "
+                    "2) использовать другой номер или 3) авторизоваться по <b>QR-коду</b>."
                 )
-            return False, err
+            return False, err2
+
+        return False, err
 
     async def submit_code(self, code: str) -> tuple[str, str]:
         """

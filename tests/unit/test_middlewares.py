@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiogram.types import Message
+
+from services.cache import subscription_cache, user_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    user_cache.clear()
+    subscription_cache.clear()
+    yield
+    user_cache.clear()
+    subscription_cache.clear()
 
 
 async def _call_middleware(middleware, event, data: dict):
@@ -106,7 +118,10 @@ class TestSubscriptionMiddleware:
         with (
             patch("bot.middlewares.subscription.settings") as s,
             patch("bot.middlewares.subscription.check_subscriptions", return_value=(False, [-1001])),
-            patch("bot.middlewares.subscription.get_channel_invite_links", return_value={-1001: "https://t.me/test"}),
+            patch(
+                "bot.middlewares.subscription.get_channel_invite_links",
+                return_value={-1001: ("Test Channel", "https://t.me/test")},
+            ),
         ):
             s.required_channel_ids = [-1001]
             s.owner_id = 999

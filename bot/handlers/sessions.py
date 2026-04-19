@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import Any
 
+import structlog
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.keyboards.sessions_kb import (
+    phone_retry_kb,
     session_add_method_kb,
     session_confirm_delete_kb,
     session_view_kb,
@@ -22,6 +25,7 @@ from services.session_auth import PhoneLoginSession, QRLoginSession
 from worker.session_pool import SessionPool
 
 router = Router()
+log = structlog.get_logger()
 
 # In-memory store for active auth sessions (keyed by user tg_id)
 _qr_sessions: dict[int, QRLoginSession] = {}
@@ -50,7 +54,6 @@ async def cb_sessions_list(callback: CallbackQuery, db_user: User) -> None:
 async def cb_session_view(callback: CallbackQuery) -> None:
     assert callback.message and callback.data
     session_id = callback.data.split(":", 2)[2]
-    import uuid
     async with async_session_factory() as session:
         repo = SessionRepository(session)
         tg_session = await repo.get(uuid.UUID(session_id))
@@ -75,8 +78,9 @@ async def cb_session_view(callback: CallbackQuery) -> None:
 # ── Add session — method selection ────────────────────────────────────────────
 
 @router.callback_query(F.data == "session:add")
-async def cb_session_add(callback: CallbackQuery) -> None:
+async def cb_session_add(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.message
+    await state.clear()
     await callback.message.edit_text(
         "➕ <b>Добавить сессию</b>\n\nВыбери способ авторизации:",
         reply_markup=session_add_method_kb(),
@@ -89,6 +93,7 @@ async def cb_session_add(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "session:add:qr")
 async def cb_session_add_qr(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.message
+    await state.clear()
     await callback.message.edit_text(
         "📷 <b>QR-авторизация</b>\n\nВведи название для этой сессии (например: «Основной аккаунт»):"
     )
@@ -111,11 +116,13 @@ async def fsm_qr_name(message: Message, state: FSMContext, db_user: User) -> Non
     try:
         qr_bytes = await auth.start()
     except Exception as e:
-        await status_msg.edit_text(f"❌ Ошибка: {e}")
+        log.error("QR start failed", user_id=db_user.tg_id, error=str(e))
+        _qr_sessions.pop(db_user.tg_id, None)
+        await status_msg.edit_text(f"❌ Ошибка: {e}", reply_markup=back_kb("menu:sessions"))
         await state.clear()
         return
 
-    from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     photo = BufferedInputFile(qr_bytes, filename="qr.png")
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -135,7 +142,6 @@ async def fsm_qr_name(message: Message, state: FSMContext, db_user: User) -> Non
     )
     await state.set_state(SessionAddQR.waiting_scan)
 
-    # Background task: wait for scan
     user_id = message.from_user.id  # type: ignore[union-attr]
     chat_id = message.chat.id
     task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
@@ -146,32 +152,52 @@ async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> No
     from bot.core.bot import bot
     auth = _qr_sessions.get(user_id)
     if not auth:
+        log.warning("QR waiter started without auth", user_id=user_id)
         return
     try:
         result = await auth.wait_for_scan(timeout=60.0)
     except asyncio.CancelledError:
-        return  # task was cancelled by a refresh — new task takes over
+        return
     except Exception as e:
+        log.error("QR wait failed", user_id=user_id, error=str(e))
         _qr_sessions.pop(user_id, None)
         _qr_tasks.pop(user_id, None)
         await state.clear()
-        await bot.send_message(chat_id, f"❌ Ошибка при ожидании QR: {e}")
+        try:
+            await bot.send_message(
+                chat_id,
+                f"❌ Ошибка при ожидании QR: {e}",
+                reply_markup=back_kb("menu:sessions"),
+            )
+        except Exception:
+            pass
         return
+
+    log.info("QR wait returned", user_id=user_id, result=result)
 
     if result == "success":
         _qr_sessions.pop(user_id, None)
         _qr_tasks.pop(user_id, None)
         try:
+            await bot.send_message(chat_id, "✅ Отсканировано! Сохраняю сессию...")
+        except Exception:
+            pass
+        try:
             auth_result = await auth.finalize()
-            await _save_session(user_id, chat_id, state, auth_result)
         except Exception as e:
+            log.exception("QR finalize crashed", user_id=user_id)
             await state.clear()
-            await bot.send_message(chat_id, f"❌ Не удалось сохранить сессию: {e}")
+            await bot.send_message(
+                chat_id,
+                f"❌ Не удалось завершить авторизацию: {e}",
+                reply_markup=back_kb("menu:sessions"),
+            )
+            return
+        await _save_session(user_id, chat_id, state, auth_result)
     elif result == "password_needed":
         await bot.send_message(chat_id, "🔐 Введи пароль двухфакторной аутентификации:")
         await state.set_state(SessionAddQR.waiting_2fa)
     else:
-        # QR expired — leave session in dict so user can refresh
         await bot.send_message(chat_id, "⏰ QR-код истёк. Нажми «Обновить QR» или начни заново.")
 
 
@@ -192,7 +218,6 @@ async def cb_qr_refresh(callback: CallbackQuery, state: FSMContext, db_user: Use
         await callback.answer(f"❌ Ошибка обновления: {e}", show_alert=True)
         return
 
-    # Cancel the old watcher task — it was watching the previous QR object
     old_task = _qr_tasks.pop(user_id, None)
     if old_task and not old_task.done():
         old_task.cancel()
@@ -214,7 +239,6 @@ async def cb_qr_refresh(callback: CallbackQuery, state: FSMContext, db_user: Use
         reply_markup=kb,
     )
 
-    # Start a new watcher task for the refreshed QR
     task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
     _qr_tasks[user_id] = task
 
@@ -232,7 +256,10 @@ async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User
     if auth:
         await auth.cancel()
     await state.clear()
-    await callback.message.edit_caption("❌ Авторизация отменена.")
+    try:
+        await callback.message.edit_caption("❌ Авторизация отменена.")
+    except Exception:
+        await callback.message.answer("❌ Авторизация отменена.")
     await callback.answer()
 
 
@@ -244,7 +271,14 @@ async def fsm_qr_2fa(message: Message, state: FSMContext, db_user: User) -> None
         await message.answer("❌ Сессия устарела. Начни заново.", reply_markup=back_kb("menu:sessions"))
         await state.clear()
         return
-    auth_result = await auth.submit_password(password)
+    try:
+        auth_result = await auth.submit_password(password)
+    except Exception as e:
+        log.exception("QR 2FA submit crashed", user_id=db_user.tg_id)
+        await message.answer(f"❌ Ошибка при вводе пароля: {e}", reply_markup=back_kb("menu:sessions"))
+        await state.clear()
+        _qr_sessions.pop(db_user.tg_id, None)
+        return
     _qr_sessions.pop(db_user.tg_id, None)
     await _save_session(db_user.tg_id, message.chat.id, state, auth_result, message)
 
@@ -254,9 +288,15 @@ async def fsm_qr_2fa(message: Message, state: FSMContext, db_user: User) -> None
 @router.callback_query(F.data == "session:add:phone")
 async def cb_session_add_phone(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.message
-    await callback.message.edit_text(
-        "📞 <b>Авторизация по номеру</b>\n\nВведи название для этой сессии:"
-    )
+    await state.clear()
+    try:
+        await callback.message.edit_text(
+            "📞 <b>Авторизация по номеру</b>\n\nВведи название для этой сессии:"
+        )
+    except Exception:
+        await callback.message.answer(
+            "📞 <b>Авторизация по номеру</b>\n\nВведи название для этой сессии:"
+        )
     await state.set_state(SessionAddPhone.waiting_name)
     await callback.answer()
 
@@ -284,7 +324,7 @@ async def fsm_phone_number(message: Message, state: FSMContext, db_user: User) -
         _phone_sessions.pop(db_user.tg_id, None)
         await auth.cancel()
         await state.clear()
-        await status.edit_text(f"❌ {error}", reply_markup=back_kb("menu:sessions"))
+        await status.edit_text(f"❌ {error}", reply_markup=phone_retry_kb())
         return
     await status.edit_text(
         "📨 Код отправлен в Telegram.\n\n"
@@ -334,7 +374,6 @@ async def fsm_phone_2fa(message: Message, state: FSMContext, db_user: User) -> N
 
 @router.callback_query(F.data.startswith("session:check:"))
 async def cb_session_check(callback: CallbackQuery) -> None:
-    import uuid
     assert callback.message and callback.data
     session_id = callback.data.split(":", 2)[2]
     await callback.answer("⏳ Проверяю...", show_alert=False)
@@ -358,7 +397,6 @@ async def cb_session_check(callback: CallbackQuery) -> None:
             repo2 = SessionRepository(db_session)
             await repo2.update(tg_session.id, is_active=is_alive)
 
-    # Re-fetch updated record and refresh the view
     async with async_session_factory() as session:
         repo = SessionRepository(session)
         tg_session = await repo.get(uuid.UUID(session_id))
@@ -395,7 +433,6 @@ async def cb_session_delete(callback: CallbackQuery) -> None:
 async def cb_session_delete_confirm(callback: CallbackQuery, db_user: User) -> None:
     assert callback.message and callback.data
     session_id = callback.data.split(":", 3)[3]
-    import uuid
     async with async_session_factory() as session:
         async with session.begin():
             repo = SessionRepository(session)
@@ -413,32 +450,51 @@ async def _save_session(
     auth_result: Any,
     message: Message | None = None,
 ) -> None:
+    """Persist auth_result and *always* reply to the user, even on partial failure."""
     from bot.core.bot import bot
 
-    data = await state.get_data()
+    async def _reply(text: str, *, show_back: bool = True) -> None:
+        kb = back_kb("menu:sessions") if show_back else None
+        try:
+            if message is not None:
+                await message.answer(text, reply_markup=kb)
+            else:
+                await bot.send_message(chat_id, text, reply_markup=kb)
+        except Exception:
+            log.exception("Failed to deliver session reply", user_id=user_id)
+
+    try:
+        data = await state.get_data()
+    except Exception:
+        data = {}
     session_name = data.get("session_name", "Без названия")
-    await state.clear()
+    try:
+        await state.clear()
+    except Exception:
+        pass
 
     if not auth_result.success:
-        text = f"❌ Ошибка авторизации: {auth_result.error}"
-        if message:
-            await message.answer(text, reply_markup=back_kb("menu:sessions"))
-        else:
-            await bot.send_message(chat_id, text, reply_markup=back_kb("menu:sessions"))
+        log.warning("Session auth failed", user_id=user_id, error=auth_result.error)
+        await _reply(f"❌ Ошибка авторизации: {auth_result.error}")
         return
 
-    async with async_session_factory() as db_session:
-        async with db_session.begin():
-            repo = SessionRepository(db_session)
-            await repo.create(
-                user_id=user_id,
-                name=session_name,
-                encrypted_session=auth_result.encrypted_session,
-                phone=auth_result.phone,
-                has_premium=auth_result.has_premium,
-                account_name=auth_result.account_name,
-                account_username=auth_result.account_username,
-            )
+    try:
+        async with async_session_factory() as db_session:
+            async with db_session.begin():
+                repo = SessionRepository(db_session)
+                await repo.create(
+                    user_id=user_id,
+                    name=session_name,
+                    encrypted_session=auth_result.encrypted_session,
+                    phone=auth_result.phone,
+                    has_premium=auth_result.has_premium,
+                    account_name=auth_result.account_name,
+                    account_username=auth_result.account_username,
+                )
+    except Exception as e:
+        log.exception("Session DB save failed", user_id=user_id)
+        await _reply(f"❌ Сессия авторизована, но не сохранилась в БД: {e}")
+        return
 
     premium = "💎 Premium" if auth_result.has_premium else "нет"
     text = (
@@ -447,7 +503,5 @@ async def _save_session(
         f"👤 {auth_result.account_name or '—'}\n"
         f"⭐ Premium: {premium}"
     )
-    if message:
-        await message.answer(text, reply_markup=back_kb("menu:sessions"))
-    else:
-        await bot.send_message(chat_id, text, reply_markup=back_kb("menu:sessions"))
+    log.info("Session saved", user_id=user_id, name=session_name)
+    await _reply(text)

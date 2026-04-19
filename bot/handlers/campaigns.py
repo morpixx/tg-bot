@@ -16,7 +16,7 @@ from bot.keyboards.campaigns_kb import (
     session_select_kb,
 )
 from bot.keyboards.posts_kb import posts_list_kb
-from bot.keyboards.utils import back_kb
+from bot.keyboards.utils import back_button, back_kb
 from bot.states.fsm import CampaignCreate, CampaignSessionOffset, CampaignSettingsEdit
 from db.models import CampaignStatus, User
 from db.repositories.campaign_repo import CampaignRepository
@@ -792,3 +792,32 @@ async def cb_campaign_delete_confirm(callback: CallbackQuery) -> None:
             await repo.delete(uuid.UUID(campaign_id))
     await callback.message.edit_text("✅ Кампания удалена.", reply_markup=back_kb("menu:campaigns"))
     await callback.answer()
+
+
+# ── Clone ──────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("campaign:clone:"))
+async def cb_campaign_clone(callback: CallbackQuery) -> None:
+    assert callback.message and callback.data
+    campaign_id = callback.data.split(":", 2)[2]
+    async with async_session_factory() as session:
+        async with session.begin():
+            repo = CampaignRepository(session)
+            src = await repo.get(uuid.UUID(campaign_id))
+            if not src:
+                await callback.answer("Кампания не найдена", show_alert=True)
+                return
+            new_name = f"{src.name} (копия)"
+            new_campaign = await repo.clone(uuid.UUID(campaign_id), new_name)
+        if new_campaign is None:
+            await callback.answer("Не удалось клонировать", show_alert=True)
+            return
+        new_id = str(new_campaign.id)
+    await callback.message.edit_text(
+        f"📑 Клон создан: <b>{new_name}</b>\n\nОткрой клон для запуска или правки настроек.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📂 Открыть клон", callback_data=f"campaign:view:{new_id}")],
+            [back_button("menu:campaigns")],
+        ]),
+    )
+    await callback.answer("Клонировано ✅")

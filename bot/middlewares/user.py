@@ -8,10 +8,16 @@ from aiogram.types import TelegramObject
 
 from db.repositories.user_repo import UserRepository
 from db.session import async_session_factory
+from services.cache import user_cache
 
 
 class UserMiddleware(BaseMiddleware):
-    """Auto-register user on first interaction and inject into handler data."""
+    """Auto-register user on first interaction and inject into handler data.
+
+    The upserted User row is cached in-memory for ~60s (services.cache.user_cache).
+    This skips a DB round-trip on every hot-path interaction while still letting
+    username / full_name changes propagate within a minute.
+    """
 
     async def __call__(
         self,
@@ -23,9 +29,11 @@ class UserMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
-        # Upsert the user in a short-lived session and release it BEFORE calling
-        # the handler — otherwise every handler holds a DB connection for its
-        # full duration, which starves the pool under load.
+        cached = user_cache.get(user.id)
+        if cached is not None:
+            data["db_user"] = cached
+            return await handler(event, data)
+
         async with async_session_factory() as session:
             async with session.begin():
                 repo = UserRepository(session)
@@ -34,6 +42,8 @@ class UserMiddleware(BaseMiddleware):
                     username=user.username,
                     full_name=user.full_name,
                 )
-            data["db_user"] = db_user
+            session.expunge(db_user)
 
+        user_cache[user.id] = db_user
+        data["db_user"] = db_user
         return await handler(event, data)

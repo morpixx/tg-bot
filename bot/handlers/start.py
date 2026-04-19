@@ -3,18 +3,49 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import func, select
 
 from bot.core.config import settings
 from bot.keyboards.main_menu import main_menu_kb
+from db.models import Campaign, CampaignStatus, TargetChat, TelegramSession
+from db.session import async_session_factory
 from services.subscription import check_subscriptions
 
 router = Router()
 
-WELCOME_TEXT = (
-    "👋 <b>Привет, {name}!</b>\n\n"
-    "Я бот для управления рассылкой по Telegram-чатам.\n\n"
-    "Используй меню ниже для управления:"
-)
+
+async def _dashboard(tg_id: int) -> str:
+    """Build the dashboard header with live counts. One async DB round-trip."""
+    async with async_session_factory() as session:
+        sessions_total = await session.scalar(
+            select(func.count(TelegramSession.id)).where(TelegramSession.user_id == tg_id)
+        ) or 0
+        sessions_active = await session.scalar(
+            select(func.count(TelegramSession.id)).where(
+                TelegramSession.user_id == tg_id,
+                TelegramSession.is_active.is_(True),
+            )
+        ) or 0
+        campaigns_active = await session.scalar(
+            select(func.count(Campaign.id)).where(
+                Campaign.user_id == tg_id,
+                Campaign.status == CampaignStatus.ACTIVE,
+            )
+        ) or 0
+        chats_total = await session.scalar(
+            select(func.count(TargetChat.id)).where(TargetChat.user_id == tg_id)
+        ) or 0
+
+    return (
+        f"📱 Сессий: <b>{sessions_active}/{sessions_total}</b>   "
+        f"💬 Чатов: <b>{chats_total}</b>\n"
+        f"📢 Активных кампаний: <b>{campaigns_active}</b>"
+    )
+
+
+async def _menu_text(name: str, tg_id: int) -> str:
+    header = await _dashboard(tg_id)
+    return f"🏠 <b>Главное меню</b>\n\n{header}\n\nПривет, {name}! Выбери раздел ниже:"
 
 
 @router.message(CommandStart())
@@ -22,20 +53,20 @@ async def cmd_start(message: Message) -> None:
     assert message.from_user
     name = message.from_user.full_name or message.from_user.username or "Пользователь"
     is_owner = message.from_user.id == settings.owner_id
-    await message.answer(
-        WELCOME_TEXT.format(name=name),
-        reply_markup=main_menu_kb(is_owner=is_owner),
-    )
+    text = await _menu_text(name, message.from_user.id)
+    await message.answer(text, reply_markup=main_menu_kb(is_owner=is_owner))
 
 
 @router.callback_query(F.data == "menu:main")
 async def cb_main_menu(callback: CallbackQuery) -> None:
     assert callback.message and callback.from_user
     is_owner = callback.from_user.id == settings.owner_id
-    await callback.message.edit_text(
-        "🏠 <b>Главное меню</b>",
-        reply_markup=main_menu_kb(is_owner=is_owner),
-    )
+    name = callback.from_user.full_name or callback.from_user.username or "Пользователь"
+    text = await _menu_text(name, callback.from_user.id)
+    try:
+        await callback.message.edit_text(text, reply_markup=main_menu_kb(is_owner=is_owner))
+    except Exception:
+        await callback.message.answer(text, reply_markup=main_menu_kb(is_owner=is_owner))
     await callback.answer()
 
 
@@ -45,10 +76,9 @@ async def cb_check_subscription(callback: CallbackQuery) -> None:
     subscribed, _ = await check_subscriptions(callback.bot, callback.from_user.id)
     if subscribed:
         is_owner = callback.from_user.id == settings.owner_id
-        await callback.message.edit_text(
-            "✅ <b>Подписка подтверждена!</b>\n\nДобро пожаловать 🎉",
-            reply_markup=main_menu_kb(is_owner=is_owner),
-        )
+        name = callback.from_user.full_name or callback.from_user.username or "Пользователь"
+        text = await _menu_text(name, callback.from_user.id)
+        await callback.message.edit_text(text, reply_markup=main_menu_kb(is_owner=is_owner))
     else:
         await callback.answer("Вы ещё не подписались на все каналы!", show_alert=True)
 

@@ -7,6 +7,7 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from bot.core.config import settings
+from services.cache import subscription_cache
 from services.subscription import check_subscriptions, get_channel_invite_links
 
 SUBSCRIBE_TEXT = (
@@ -26,7 +27,6 @@ class SubscriptionMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        # Skip if no channels configured
         if not settings.required_channel_ids:
             return await handler(event, data)
 
@@ -34,14 +34,12 @@ class SubscriptionMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
-        # Owner always has access
         if user.id == settings.owner_id:
             return await handler(event, data)
 
-        # Allow the "I subscribed" re-check callback through unconditionally —
-        # otherwise the user is stuck forever (middleware blocks the very button
-        # that would let them pass the gate).
+        # Re-check callback: drop cache so the user can pass immediately after subscribing.
         if isinstance(event, CallbackQuery) and event.data == "check_subscription":
+            subscription_cache.pop(user.id, None)
             return await handler(event, data)
 
         bot: Bot = data["bot"]
@@ -50,13 +48,11 @@ class SubscriptionMiddleware(BaseMiddleware):
         if subscribed:
             return await handler(event, data)
 
-        # Build subscription message
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-        links = await get_channel_invite_links(bot, not_subscribed)
+        info = await get_channel_invite_links(bot, not_subscribed)
         link_lines = "\n".join(
-            f"• <a href='{url}'>Канал {channel_id}</a>"
-            for channel_id, url in links.items()
+            f"• <a href='{url}'>{title}</a>" for title, url in info.values()
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

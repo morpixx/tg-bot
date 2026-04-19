@@ -6,6 +6,16 @@ from bot.keyboards.utils import back_button
 from db.models import TelegramSession
 
 
+def phone_retry_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Попробовать снова", callback_data="session:add:phone")],
+            [InlineKeyboardButton(text="📷 Войти по QR", callback_data="session:add:qr")],
+            [back_button("menu:sessions")],
+        ]
+    )
+
+
 def sessions_list_kb(sessions: list[TelegramSession]) -> InlineKeyboardMarkup:
     rows = []
     for s in sessions:

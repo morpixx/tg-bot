@@ -2,9 +2,20 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from aiogram.exceptions import TelegramForbiddenError
 
+from services.cache import channel_info_cache, subscription_cache
 from services.subscription import check_subscriptions, get_channel_invite_links
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    subscription_cache.clear()
+    channel_info_cache.clear()
+    yield
+    subscription_cache.clear()
+    channel_info_cache.clear()
 
 # ── check_subscriptions ───────────────────────────────────────────────────────
 
@@ -99,15 +110,17 @@ async def test_multiple_channels_partial_subscribed(mock_bot) -> None:
 async def test_invite_link_public_channel(mock_bot) -> None:
     chat = MagicMock()
     chat.username = "mychannel"
+    chat.title = "My Channel"
     mock_bot.get_chat.return_value = chat
 
     links = await get_channel_invite_links(mock_bot, [-1001])
-    assert links[-1001] == "https://t.me/mychannel"
+    assert links[-1001] == ("My Channel", "https://t.me/mychannel")
 
 
 async def test_invite_link_private_channel(mock_bot) -> None:
     chat = MagicMock()
     chat.username = None
+    chat.title = "Private"
     mock_bot.get_chat.return_value = chat
 
     link_obj = MagicMock()
@@ -115,11 +128,12 @@ async def test_invite_link_private_channel(mock_bot) -> None:
     mock_bot.create_chat_invite_link.return_value = link_obj
 
     links = await get_channel_invite_links(mock_bot, [-1001])
-    assert links[-1001] == "https://t.me/+ABC123"
+    assert links[-1001] == ("Private", "https://t.me/+ABC123")
 
 
 async def test_invite_link_error_fallback(mock_bot) -> None:
     mock_bot.get_chat.side_effect = Exception("error")
 
     links = await get_channel_invite_links(mock_bot, [-1001])
-    assert links[-1001] == "-1001"
+    # Fallback: title defaults to "Канал <id>", url to stringified id.
+    assert links[-1001] == ("Канал -1001", "-1001")

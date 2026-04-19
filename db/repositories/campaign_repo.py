@@ -146,6 +146,55 @@ class CampaignRepository:
             cs.delay_offset_seconds = offset
             await self._session.flush()
 
+    async def clone(self, campaign_id: uuid.UUID, new_name: str) -> Campaign | None:
+        """Duplicate a campaign: settings, session offsets, chats. Status starts as DRAFT."""
+        source = await self.get(campaign_id, load_relations=True)
+        if source is None:
+            return None
+
+        new_campaign = Campaign(
+            user_id=source.user_id,
+            name=new_name,
+            post_id=source.post_id,
+            status=CampaignStatus.DRAFT,
+        )
+        self._session.add(new_campaign)
+        await self._session.flush()
+
+        if source.settings:
+            src = source.settings
+            self._session.add(CampaignSettings(
+                campaign_id=new_campaign.id,
+                delay_between_chats=src.delay_between_chats,
+                randomize_delay=src.randomize_delay,
+                randomize_min=src.randomize_min,
+                randomize_max=src.randomize_max,
+                shuffle_after_cycle=src.shuffle_after_cycle,
+                delay_between_cycles=src.delay_between_cycles,
+                cycle_delay_randomize=src.cycle_delay_randomize,
+                cycle_delay_min=src.cycle_delay_min,
+                cycle_delay_max=src.cycle_delay_max,
+                max_cycles=src.max_cycles,
+                forward_mode=src.forward_mode,
+            ))
+
+        for cs in source.campaign_sessions:
+            self._session.add(CampaignSession(
+                campaign_id=new_campaign.id,
+                session_id=cs.session_id,
+                delay_offset_seconds=cs.delay_offset_seconds,
+            ))
+
+        for cc in source.campaign_chats:
+            self._session.add(CampaignChat(
+                campaign_id=new_campaign.id,
+                chat_id=cc.chat_id,
+                position=cc.position,
+            ))
+
+        await self._session.flush()
+        return new_campaign
+
     async def delete(self, campaign_id: uuid.UUID) -> None:
         campaign = await self.get(campaign_id)
         if campaign:
