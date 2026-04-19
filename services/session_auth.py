@@ -53,7 +53,10 @@ _DEVICE_ROTATION = (
 
 def _make_client(string_session: str = "", device_factory=None) -> TelegramClient:
     api = device_factory() if device_factory else API.TelegramIOS.Generate()
-    return TelegramClient(StringSession(string_session), api=api)
+    # receive_updates=False is critical: without it, telethon starts an update
+    # dispatcher that calls get_me() on an unauthorized client and triggers
+    # GetUsersRequest → FloodWaitError(3600s). We only need request/response.
+    return TelegramClient(StringSession(string_session), api=api, receive_updates=False)
 
 
 def _is_recaptcha(err: str) -> bool:
