@@ -123,7 +123,9 @@ class Post(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped[User] = relationship(back_populates="posts")
-    campaigns: Mapped[list[Campaign]] = relationship(back_populates="post")
+    # passive_deletes lets the DB's ON DELETE RESTRICT fire instead of SQLAlchemy
+    # trying to SET NULL on campaign.post_id (which is NOT NULL and would violate).
+    campaigns: Mapped[list[Campaign]] = relationship(back_populates="post", passive_deletes=True)
 
 
 class TargetChat(Base):

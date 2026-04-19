@@ -1,8 +1,6 @@
 # ── Worker service ────────────────────────────────────────────────────────────
 # In Railway UI when adding the second service:
 #   Settings → Config Path → railway.worker.toml
-#
-# The worker does NOT run migrations (that's the bot's job via preDeployCommand).
 
 [build]
 builder = "dockerfile"
@@ -10,6 +8,10 @@ dockerfilePath = "docker/Dockerfile"
 
 [deploy]
 region = "europe-west4"
+# Wait for the bot service to finish migrations before starting the worker.
+# Alembic is idempotent (no-op when already at head) and uses a DB-level advisory
+# lock, so running it from both services is safe.
+preDeployCommand = "python scripts/migrate.py"
 startCommand = "python -m worker"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10

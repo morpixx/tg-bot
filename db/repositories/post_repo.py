@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Post, PostType
+from db.models import Campaign, Post, PostType
 
 
 class PostRepository:
@@ -65,6 +65,13 @@ class PostRepository:
         self._session.add(post)
         await self._session.flush()
         return post
+
+    async def count_campaigns(self, post_id: uuid.UUID) -> int:
+        """How many campaigns reference this post (blocks deletion if > 0)."""
+        result = await self._session.execute(
+            select(func.count()).select_from(Campaign).where(Campaign.post_id == post_id)
+        )
+        return int(result.scalar() or 0)
 
     async def delete(self, post_id: uuid.UUID) -> None:
         post = await self.get(post_id)

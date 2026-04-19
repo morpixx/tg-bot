@@ -269,8 +269,20 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
 async def cb_post_delete_ask(callback: CallbackQuery) -> None:
     assert callback.message and callback.data
     post_id = callback.data.split(":", 3)[3]
+    async with async_session_factory() as session:
+        repo = PostRepository(session)
+        in_use = await repo.count_campaigns(uuid.UUID(post_id))
+    if in_use > 0:
+        await callback.message.edit_text(
+            f"⚠️ <b>Нельзя удалить.</b>\n\n"
+            f"Пост используется в {in_use} кампани{'и' if in_use == 1 else 'ях'}. "
+            f"Сначала удали эти кампании.",
+            reply_markup=back_kb(f"post:view:{post_id}"),
+        )
+        await callback.answer()
+        return
     await callback.message.edit_text(
-        "🗑 <b>Удалить пост?</b>\n\nКампании, использующие этот пост, продолжат работу, но пост из библиотеки исчезнет.",
+        "🗑 <b>Удалить пост?</b>\n\nЭто действие нельзя отменить.",
         reply_markup=post_delete_confirm_kb(post_id),
     )
     await callback.answer()
@@ -283,6 +295,14 @@ async def cb_post_delete(callback: CallbackQuery) -> None:
     async with async_session_factory() as session:
         async with session.begin():
             repo = PostRepository(session)
+            in_use = await repo.count_campaigns(uuid.UUID(post_id))
+            if in_use > 0:
+                await callback.message.edit_text(
+                    f"⚠️ Пост используется в {in_use} кампани{'и' if in_use == 1 else 'ях'} — сначала удали их.",
+                    reply_markup=back_kb(f"post:view:{post_id}"),
+                )
+                await callback.answer()
+                return
             await repo.delete(uuid.UUID(post_id))
     await callback.message.edit_text("✅ Пост удалён.", reply_markup=back_kb("menu:posts"))
     await callback.answer()
