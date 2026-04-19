@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import io
 import random
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import qrcode
+import structlog
 from opentele2.api import API
 from opentele2.tl import TelegramClient
 from telethon.errors import (
@@ -17,6 +20,15 @@ from telethon.errors import (
 from telethon.sessions import StringSession
 
 from services.crypto import encrypt
+
+log = structlog.get_logger()
+
+# Auth-state polling interval — safety net in case UpdateLoginToken is missed.
+_AUTH_POLL_SECONDS = 2.0
+# How long before token expiry to refresh QR — small margin to avoid races.
+_REFRESH_MARGIN_SECONDS = 3.0
+# Overall cap for a single QR login attempt.
+_QR_MAX_TOTAL_SECONDS = 5 * 60
 
 
 @dataclass
@@ -50,26 +62,57 @@ def _is_recaptcha(err: str) -> bool:
 
 # ── QR Login ──────────────────────────────────────────────────────────────────
 
+# Outcome strings produced by the internal loop and surfaced via wait_done().
+_OUTCOME_SUCCESS = "success"
+_OUTCOME_PASSWORD_NEEDED = "password_needed"
+_OUTCOME_TIMEOUT = "timeout"
+_OUTCOME_ERROR = "error"
+_OUTCOME_CANCELLED = "cancelled"
+
+RefreshCallback = Callable[[bytes, str], Awaitable[None]]
+
+
 class QRLoginSession:
-    """Manages QR login flow. One instance per auth attempt."""
+    """Self-driving QR login with auto-refresh + auth-state polling safety net.
+
+    Lifecycle:
+      auth = QRLoginSession()
+      img = await auth.start(on_refresh)          # 1st QR
+      outcome = await auth.wait_done()            # "success" / "password_needed" / ...
+      if outcome == "password_needed":
+          result = await auth.submit_password(pwd)
+      else:
+          result = await auth.finalize()
+
+    The background loop keeps the QR fresh: every time Telegram's 30s token
+    nears expiry, we `recreate()` it and notify the UI via on_refresh. That
+    way the user never sees an expired QR.
+
+    As a belt-and-suspenders check we also poll `is_user_authorized()` on
+    each wait cycle — if telethon's UpdateLoginToken handler misses an update
+    for any reason, we still detect the successful login.
+    """
 
     def __init__(self) -> None:
         self._client = _make_client()
         self._qr_login = None
-        self._wait_task: asyncio.Task | None = None
-        self._finalized = False  # guard against double-save on refresh race
+        self._loop_task: asyncio.Task | None = None
+        self._done_event = asyncio.Event()
+        self._on_refresh: RefreshCallback | None = None
+        self._outcome: str | None = None
+        self._error: str | None = None
+        self._finalized = False
 
-    async def start(self) -> bytes:
-        """Connect client, start QR login, return QR image bytes.
+    # ── Public API ────────────────────────────────────────────────────────
 
-        The wait task is kicked off *before* returning so Telethon's
-        UpdateLoginToken handler is registered before the user can scan.
-        """
+    async def start(self, on_refresh: RefreshCallback) -> bytes:
+        """Connect, request first token, launch the background auth loop."""
+        self._on_refresh = on_refresh
         await self._client.connect()
         self._qr_login = await self._client.qr_login()
-        self._wait_task = asyncio.create_task(self._qr_login.wait())
-        # Yield once so the task runs up to its first suspension point,
-        # which is after add_event_handler — no scan can be missed.
+        self._loop_task = asyncio.create_task(self._run_loop())
+        # Yield so the loop reaches its first await (handler registered inside
+        # qr_login.wait()) before we return and the user sees the QR.
         await asyncio.sleep(0)
         return self._generate_qr_image(self._qr_login.url)
 
@@ -78,33 +121,17 @@ class QRLoginSession:
         assert self._qr_login is not None
         return self._qr_login.url
 
-    async def wait_for_scan(self, timeout: float = 60.0) -> str:
-        """Wait for QR scan. Returns 'success', 'password_needed', or 'expired'."""
-        assert self._wait_task is not None
-        try:
-            await asyncio.wait_for(asyncio.shield(self._wait_task), timeout=timeout)
-            return "success"
-        except TimeoutError:
-            return "expired"
-        except SessionPasswordNeededError:
-            return "password_needed"
+    async def wait_done(self) -> str:
+        """Block until the loop finishes. Returns the outcome string."""
+        await self._done_event.wait()
+        return self._outcome or _OUTCOME_ERROR
 
-    async def refresh_qr(self) -> bytes:
-        """Regenerate QR code after expiry."""
-        if self._wait_task and not self._wait_task.done():
-            self._wait_task.cancel()
-            try:
-                await self._wait_task
-            except BaseException:
-                pass
-        # recreate() returns None and mutates self._qr_login._resp in place.
-        await self._qr_login.recreate()
-        self._wait_task = asyncio.create_task(self._qr_login.wait())
-        await asyncio.sleep(0)
-        return self._generate_qr_image(self.login_url())
+    @property
+    def error(self) -> str | None:
+        return self._error
 
     async def submit_password(self, password: str) -> AuthResult:
-        """Submit 2FA password after QR scan."""
+        """Submit 2FA password after a `password_needed` outcome."""
         try:
             await self._client.sign_in(password=password)
         except Exception as e:
@@ -112,7 +139,102 @@ class QRLoginSession:
         return await self._finalize()
 
     async def finalize(self) -> AuthResult:
+        """Pull user data and encrypt the StringSession for DB storage."""
         return await self._finalize()
+
+    async def cancel(self) -> None:
+        """Abort the loop and disconnect the client."""
+        if self._loop_task and not self._loop_task.done():
+            self._loop_task.cancel()
+            try:
+                await self._loop_task
+            except BaseException:
+                pass
+        try:
+            await self._client.disconnect()
+        except Exception:
+            pass
+
+    # ── Loop ──────────────────────────────────────────────────────────────
+
+    async def _run_loop(self) -> None:
+        """Wait on the token, auto-refresh on expiry, poll auth as safety net."""
+        deadline = asyncio.get_event_loop().time() + _QR_MAX_TOTAL_SECONDS
+        try:
+            while not self._done_event.is_set():
+                now = asyncio.get_event_loop().time()
+                if now >= deadline:
+                    self._finish(_OUTCOME_TIMEOUT)
+                    return
+
+                token_window = self._seconds_until_expiry() - _REFRESH_MARGIN_SECONDS
+                wait_slice = min(max(token_window, _AUTH_POLL_SECONDS), deadline - now)
+
+                try:
+                    # qr_login.wait() registers its own UpdateLoginToken handler
+                    # and resolves via that OR via token-expiry TimeoutError.
+                    await asyncio.wait_for(
+                        self._qr_login.wait(wait_slice + 1.0),
+                        timeout=wait_slice,
+                    )
+                    # Primary path: handler fired, token imported, user authed.
+                    self._finish(_OUTCOME_SUCCESS)
+                    return
+                except SessionPasswordNeededError:
+                    self._finish(_OUTCOME_PASSWORD_NEEDED)
+                    return
+                except asyncio.CancelledError:
+                    self._finish(_OUTCOME_CANCELLED)
+                    return
+                except TimeoutError:
+                    # Fallback: maybe the update fired but our handler missed it.
+                    if await self._safely_is_authorized():
+                        self._finish(_OUTCOME_SUCCESS)
+                        return
+                    # Genuine token expiry — recreate and keep looping.
+                    try:
+                        await self._qr_login.recreate()
+                    except Exception as e:
+                        log.exception("qr recreate failed")
+                        self._error = str(e)
+                        self._finish(_OUTCOME_ERROR)
+                        return
+                    await self._notify_refresh()
+                except Exception as e:
+                    log.exception("qr loop unexpected error")
+                    self._error = str(e)
+                    self._finish(_OUTCOME_ERROR)
+                    return
+        except asyncio.CancelledError:
+            self._finish(_OUTCOME_CANCELLED)
+
+    async def _safely_is_authorized(self) -> bool:
+        try:
+            return bool(await self._client.is_user_authorized())
+        except Exception:
+            return False
+
+    def _seconds_until_expiry(self) -> float:
+        if not self._qr_login:
+            return 0.0
+        now = datetime.datetime.now(tz=datetime.UTC)
+        return max(0.0, (self._qr_login.expires - now).total_seconds())
+
+    async def _notify_refresh(self) -> None:
+        if not self._on_refresh:
+            return
+        try:
+            img = self._generate_qr_image(self._qr_login.url)
+            await self._on_refresh(img, self._qr_login.url)
+        except Exception:
+            log.exception("on_refresh callback failed")
+
+    def _finish(self, outcome: str) -> None:
+        if not self._done_event.is_set():
+            self._outcome = outcome
+            self._done_event.set()
+
+    # ── Finalization ──────────────────────────────────────────────────────
 
     async def _finalize(self) -> AuthResult:
         if self._finalized:
@@ -120,6 +242,8 @@ class QRLoginSession:
         self._finalized = True
         try:
             me = await self._client.get_me()
+            if me is None:
+                return AuthResult(success=False, error="Not authorized")
             string_session = self._client.session.save()
             return AuthResult(
                 success=True,
@@ -130,21 +254,13 @@ class QRLoginSession:
                 account_username=me.username,
             )
         except Exception as e:
+            log.exception("qr finalize failed")
             return AuthResult(success=False, error=str(e))
         finally:
             try:
                 await self._client.disconnect()
             except Exception:
                 pass
-
-    async def cancel(self) -> None:
-        if self._wait_task and not self._wait_task.done():
-            self._wait_task.cancel()
-            try:
-                await self._wait_task
-            except BaseException:
-                pass
-        await self._client.disconnect()
 
     @staticmethod
     def _generate_qr_image(url: str) -> bytes:

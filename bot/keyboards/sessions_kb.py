@@ -38,11 +38,14 @@ def session_add_method_kb() -> InlineKeyboardMarkup:
 
 
 def qr_auth_kb(login_url: str) -> InlineKeyboardMarkup:
-    """QR screen controls: clickable tg://login link + refresh/cancel."""
+    """QR screen controls: clickable tg://login link + cancel.
+
+    Token auto-refreshes in the background, so a manual refresh button
+    would just add UI noise.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔓 Авторизовать по ссылке", url=login_url)],
-            [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="session:qr:refresh")],
             [InlineKeyboardButton(text="❌ Отмена", callback_data="session:qr:cancel")],
         ]
     )

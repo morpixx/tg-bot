@@ -160,77 +160,107 @@ async def cb_session_add(callback: CallbackQuery, state: FSMContext) -> None:
 
 # ── QR Login flow ─────────────────────────────────────────────────────────────
 
+# Per-user chat state for the QR screen so the background refresh callback
+# knows which message to replace and in which chat to post.
+_qr_screens: dict[int, dict[str, int]] = {}
+
+
+def _qr_caption(refreshed: bool = False) -> str:
+    header = "🔄 QR обновлён." if refreshed else "📷 <b>Авторизация сессии</b>"
+    return (
+        f"{header}\n\n"
+        "Два способа:\n"
+        "• <b>Отсканируй QR-код</b> камерой Telegram "
+        "(Настройки → Устройства → Подключить устройство)\n"
+        "• <b>Или нажми «🔓 Авторизовать по ссылке»</b> на том аккаунте, "
+        "который хочешь добавить — ссылку можно переслать куда угодно.\n\n"
+        "⏳ QR обновляется автоматически, ждём сканирование."
+    )
+
+
+async def _send_qr_screen(
+    user_id: int,
+    chat_id: int,
+    qr_bytes: bytes,
+    login_url: str,
+    *,
+    refreshed: bool,
+) -> None:
+    """Replace the QR image currently on the user's screen with a fresh one."""
+    from bot.core.bot import bot
+
+    screen = _qr_screens.get(user_id)
+    if screen and (prev_id := screen.get("message_id")):
+        try:
+            await bot.delete_message(chat_id, prev_id)
+        except Exception:
+            pass
+
+    photo = BufferedInputFile(qr_bytes, filename="qr.png")
+    msg = await bot.send_photo(
+        chat_id,
+        photo,
+        caption=_qr_caption(refreshed=refreshed),
+        reply_markup=qr_auth_kb(login_url),
+    )
+    _qr_screens[user_id] = {"chat_id": chat_id, "message_id": msg.message_id}
+
+
 @router.callback_query(F.data == "session:add:qr")
 async def cb_session_add_qr(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
     assert callback.message
     await state.clear()
 
+    user_id = db_user.tg_id
+    chat_id = callback.message.chat.id
+
+    # Tear down any prior QR session for this user.
+    await _teardown_qr(user_id)
+
     status_msg = await callback.message.answer("⏳ Генерирую QR-код...")
     auth = QRLoginSession()
-    _qr_sessions[db_user.tg_id] = auth
+    _qr_sessions[user_id] = auth
+
+    async def _on_refresh(qr_bytes: bytes, login_url: str) -> None:
+        await _send_qr_screen(user_id, chat_id, qr_bytes, login_url, refreshed=True)
 
     try:
-        qr_bytes = await auth.start()
+        qr_bytes = await auth.start(on_refresh=_on_refresh)
     except Exception as e:
-        log.error("QR start failed", user_id=db_user.tg_id, error=str(e))
-        _qr_sessions.pop(db_user.tg_id, None)
+        log.error("QR start failed", user_id=user_id, error=str(e))
+        _qr_sessions.pop(user_id, None)
         await status_msg.edit_text(f"❌ Ошибка: {e}", reply_markup=back_kb("menu:sessions"))
         return
 
-    login_url = auth.login_url()
-    photo = BufferedInputFile(qr_bytes, filename="qr.png")
-    await status_msg.delete()
-    await callback.message.answer_photo(
-        photo,
-        caption=(
-            "📷 <b>Авторизация сессии</b>\n\n"
-            "Два способа:\n"
-            "• <b>Отсканируй QR-код</b> камерой Telegram (Настройки → Устройства → Подключить устройство)\n"
-            "• <b>Или нажми кнопку ниже</b> на том аккаунте, который хочешь добавить — "
-            "ссылку можно переслать куда угодно\n\n"
-            "⏳ Ссылка/QR действительны 1 минуту."
-        ),
-        reply_markup=qr_auth_kb(login_url),
-    )
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    await _send_qr_screen(user_id, chat_id, qr_bytes, auth.login_url(), refreshed=False)
     await state.set_state(SessionAddQR.waiting_scan)
     await callback.answer()
 
-    user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
-    task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
+    task = asyncio.create_task(_watch_qr_auth(user_id, chat_id, state))
     _qr_tasks[user_id] = task
 
 
-async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> None:
+async def _watch_qr_auth(user_id: int, chat_id: int, state: FSMContext) -> None:
+    """Await the QR session's done-event and branch on the outcome."""
     from bot.core.bot import bot
+
     auth = _qr_sessions.get(user_id)
     if not auth:
-        log.warning("QR waiter started without auth", user_id=user_id)
+        log.warning("QR watcher started without auth", user_id=user_id)
         return
     try:
-        result = await auth.wait_for_scan(timeout=60.0)
+        outcome = await auth.wait_done()
     except asyncio.CancelledError:
         return
-    except Exception as e:
-        log.error("QR wait failed", user_id=user_id, error=str(e))
-        _qr_sessions.pop(user_id, None)
-        _qr_tasks.pop(user_id, None)
-        await state.clear()
-        try:
-            await bot.send_message(
-                chat_id,
-                f"❌ Ошибка при ожидании QR: {e}",
-                reply_markup=back_kb("menu:sessions"),
-            )
-        except Exception:
-            pass
-        return
 
-    log.info("QR wait returned", user_id=user_id, result=result)
+    log.info("QR outcome", user_id=user_id, outcome=outcome)
 
-    if result == "success":
-        _qr_sessions.pop(user_id, None)
-        _qr_tasks.pop(user_id, None)
+    if outcome == "success":
         try:
             await bot.send_message(chat_id, "✅ Авторизовано! Сохраняю сессию...")
         except Exception:
@@ -239,7 +269,7 @@ async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> No
             auth_result = await auth.finalize()
         except Exception as e:
             log.exception("QR finalize crashed", user_id=user_id)
-            await state.clear()
+            await _cleanup_after_flow(user_id, state)
             await bot.send_message(
                 chat_id,
                 f"❌ Не удалось завершить авторизацию: {e}",
@@ -247,65 +277,64 @@ async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> No
             )
             return
         await _save_session(user_id, chat_id, state, auth_result)
-    elif result == "password_needed":
+        await _cleanup_after_flow(user_id, state=None)  # state already cleared inside _save_session
+        return
+
+    if outcome == "password_needed":
         await bot.send_message(chat_id, "🔐 Введи пароль двухфакторной аутентификации:")
         await state.set_state(SessionAddQR.waiting_2fa)
-    else:
-        await bot.send_message(chat_id, "⏰ QR-код истёк. Нажми «Обновить QR» или начни заново.")
-
-
-@router.callback_query(F.data == "session:qr:refresh", SessionAddQR.waiting_scan)
-async def cb_qr_refresh(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
-    user_id = db_user.tg_id
-    chat_id = callback.message.chat.id
-
-    auth = _qr_sessions.get(user_id)
-    if not auth:
-        await callback.answer("Сессия устарела. Начни заново.", show_alert=True)
         return
 
-    try:
-        qr_bytes = await auth.refresh_qr()
-    except Exception as e:
-        await callback.answer(f"❌ Ошибка обновления: {e}", show_alert=True)
+    if outcome == "timeout":
+        await _cleanup_after_flow(user_id, state)
+        await bot.send_message(
+            chat_id,
+            "⏰ Время ожидания истекло. Нажми «Добавить сессию» чтобы попробовать снова.",
+            reply_markup=back_kb("menu:sessions"),
+        )
         return
 
-    old_task = _qr_tasks.pop(user_id, None)
-    if old_task and not old_task.done():
-        old_task.cancel()
+    if outcome == "cancelled":
+        return
 
-    login_url = auth.login_url()
-    photo = BufferedInputFile(qr_bytes, filename="qr.png")
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-    assert callback.bot
-    await callback.bot.send_photo(
-        callback.from_user.id,
-        photo,
-        caption="🔄 QR обновлён. Отсканируй или нажми кнопку.",
-        reply_markup=qr_auth_kb(login_url),
+    # error
+    err_text = auth.error or "Unknown error"
+    log.error("QR flow error", user_id=user_id, error=err_text)
+    await _cleanup_after_flow(user_id, state)
+    await bot.send_message(
+        chat_id,
+        f"❌ Ошибка: {err_text}",
+        reply_markup=back_kb("menu:sessions"),
     )
 
-    task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
-    _qr_tasks[user_id] = task
 
-    await callback.answer()
-
-
-@router.callback_query(F.data == "session:qr:cancel")
-async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
-    assert callback.message
-    user_id = db_user.tg_id
+async def _teardown_qr(user_id: int) -> None:
+    """Cancel any in-flight QR task and disconnect its client."""
     task = _qr_tasks.pop(user_id, None)
     if task and not task.done():
         task.cancel()
     auth = _qr_sessions.pop(user_id, None)
     if auth:
-        await auth.cancel()
-    await state.clear()
+        try:
+            await auth.cancel()
+        except Exception:
+            pass
+    _qr_screens.pop(user_id, None)
+
+
+async def _cleanup_after_flow(user_id: int, state: FSMContext | None) -> None:
+    await _teardown_qr(user_id)
+    if state is not None:
+        try:
+            await state.clear()
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "session:qr:cancel")
+async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
+    assert callback.message
+    await _cleanup_after_flow(db_user.tg_id, state)
     try:
         await callback.message.edit_caption(caption="❌ Авторизация отменена.")
     except Exception:
@@ -316,7 +345,8 @@ async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User
 @router.message(SessionAddQR.waiting_2fa)
 async def fsm_qr_2fa(message: Message, state: FSMContext, db_user: User) -> None:
     password = (message.text or "").strip()
-    auth = _qr_sessions.get(db_user.tg_id)
+    user_id = db_user.tg_id
+    auth = _qr_sessions.get(user_id)
     if not auth:
         await message.answer("❌ Сессия устарела. Начни заново.", reply_markup=back_kb("menu:sessions"))
         await state.clear()
@@ -324,13 +354,12 @@ async def fsm_qr_2fa(message: Message, state: FSMContext, db_user: User) -> None
     try:
         auth_result = await auth.submit_password(password)
     except Exception as e:
-        log.exception("QR 2FA submit crashed", user_id=db_user.tg_id)
+        log.exception("QR 2FA submit crashed", user_id=user_id)
         await message.answer(f"❌ Ошибка при вводе пароля: {e}", reply_markup=back_kb("menu:sessions"))
-        await state.clear()
-        _qr_sessions.pop(db_user.tg_id, None)
+        await _cleanup_after_flow(user_id, state)
         return
-    _qr_sessions.pop(db_user.tg_id, None)
-    await _save_session(db_user.tg_id, message.chat.id, state, auth_result, message)
+    await _save_session(user_id, message.chat.id, state, auth_result, message)
+    await _cleanup_after_flow(user_id, state=None)
 
 
 # ── Phone Login flow ──────────────────────────────────────────────────────────
