@@ -239,9 +239,10 @@ class TestCampaignsKb:
         cfg.forward_mode = True
         kb = campaign_settings_kb("test-id", cfg)
         datas = [b.callback_data for row in kb.inline_keyboard for b in row]
-        assert any("delay_between_chats" in (d or "") for d in datas)
-        assert any("shuffle_after_cycle" in (d or "") for d in datas)
-        assert any("forward_mode" in (d or "") for d in datas)
+        # Callbacks use short codes (see SETTING_CODES) to stay under Telegram's 64-byte limit
+        assert any("cs:dc:" in (d or "") for d in datas)  # delay_between_chats
+        assert any("cs:sh:" in (d or "") for d in datas)  # shuffle_after_cycle
+        assert any("cs:fm:" in (d or "") for d in datas)  # forward_mode
 
     def test_session_select_toggle(self) -> None:
         from bot.keyboards.campaigns_kb import session_select_kb

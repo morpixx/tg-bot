@@ -165,7 +165,13 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
         entities_json = None
         if message.entities:
             entities_json = json.dumps([e.model_dump() for e in message.entities])
-        await state.update_data(text=message.text, text_entities=entities_json, media_file_id=None, media_type=None)
+        await state.update_data(
+            text=message.text,
+            text_entities=entities_json,
+            media_type=None,
+            media_bytes=None,
+            media_filename=None,
+        )
 
     elif post_type in ("photo", "video", "document"):
         media = message.photo[-1] if message.photo else (message.video or message.document)
@@ -176,15 +182,46 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
         entities_json = None
         if message.caption_entities:
             entities_json = json.dumps([e.model_dump() for e in message.caption_entities])
+
+        # Download the file now — the worker sends via Telethon (MTProto), which
+        # can't consume Bot API file_ids for documents/videos. Storing raw bytes
+        # in Postgres lets every session re-upload the same asset cleanly.
+        status = await message.answer("⏳ Скачиваю файл...")
+        try:
+            assert message.bot
+            buffer = await message.bot.download(media.file_id)
+            media_bytes = buffer.getvalue() if buffer is not None else None
+        except Exception as e:
+            await status.edit_text(
+                f"❌ Не удалось скачать файл: {e}\n\n"
+                "Bot API ограничивает размер ~20 МБ. Для крупных файлов используй «Форвард из канала»."
+            )
+            await state.clear()
+            return
+        if not media_bytes:
+            await status.edit_text("❌ Пустой файл. Попробуй снова.")
+            await state.clear()
+            return
+        try:
+            await status.delete()
+        except Exception:
+            pass
+
+        filename = getattr(media, "file_name", None) or _default_filename(post_type)
         await state.update_data(
             text=caption,
             text_entities=entities_json,
-            media_file_id=media.file_id,
             media_type=post_type,
+            media_bytes=media_bytes,
+            media_filename=filename,
         )
 
     await message.answer("📝 Введи название поста для библиотеки:")
     await state.set_state(PostAdd.waiting_title)
+
+
+def _default_filename(post_type: str) -> str:
+    return {"photo": "photo.jpg", "video": "video.mp4", "document": "file.bin"}.get(post_type, "file.bin")
 
 
 @router.message(PostAdd.waiting_title)
@@ -215,8 +252,9 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
                     post_type=PostType(post_type_str),
                     text=data.get("text"),
                     text_entities=data.get("text_entities"),
-                    media_file_id=data.get("media_file_id"),
                     media_type=data.get("media_type"),
+                    media_bytes=data.get("media_bytes"),
+                    media_filename=data.get("media_filename"),
                 )
 
     await message.answer(

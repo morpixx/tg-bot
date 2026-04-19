@@ -32,7 +32,8 @@ class FakePost:
         self.source_chat_id = -100
         self.text = "Hello"
         self.text_entities = None
-        self.media_file_id = "FILEID"
+        self.media_bytes = None
+        self.media_filename = None
 
 
 def test_fake_post_text_type() -> None:

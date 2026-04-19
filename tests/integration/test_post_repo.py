@@ -25,17 +25,18 @@ async def test_create_manual_text(db_session, db_user) -> None:
     post = await repo.create_manual(db_user.tg_id, "Text Post", PostType.TEXT, text="Hello!")
     assert post.type == PostType.TEXT
     assert post.text == "Hello!"
-    assert post.media_file_id is None
+    assert post.media_bytes is None
 
 
 async def test_create_manual_photo(db_session, db_user) -> None:
     repo = PostRepository(db_session)
     post = await repo.create_manual(
         db_user.tg_id, "Photo Post", PostType.PHOTO,
-        text="Caption", media_file_id="FILEID123", media_type="photo"
+        text="Caption", media_bytes=b"\x89PNG\r\n\x1a\n", media_filename="photo.jpg", media_type="photo"
     )
     assert post.type == PostType.PHOTO
-    assert post.media_file_id == "FILEID123"
+    assert post.media_bytes == b"\x89PNG\r\n\x1a\n"
+    assert post.media_filename == "photo.jpg"
     assert post.text == "Caption"
 
 

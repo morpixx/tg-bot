@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import random
 import uuid
@@ -253,12 +254,17 @@ class Broadcaster:
                 msg_id = result.id
 
             elif post.type in (PostType.PHOTO, PostType.VIDEO, PostType.DOCUMENT):
+                if not post.media_bytes:
+                    return BroadcastStatus.SKIPPED, None, "Media bytes missing — recreate the post"
                 entities = _parse_entities(post.text_entities)
+                buf = io.BytesIO(post.media_bytes)
+                buf.name = post.media_filename or _default_media_filename(post.type)
                 result = await client.send_file(
                     entity=chat_id,
-                    file=post.media_file_id,
+                    file=buf,
                     caption=post.text or "",
                     formatting_entities=entities,
+                    force_document=(post.type == PostType.DOCUMENT),
                 )
                 msg_id = result.id
 
@@ -286,6 +292,14 @@ class Broadcaster:
         except Exception as e:
             log.error("Send error", chat_id=chat_id, error=str(e))
             return BroadcastStatus.FAILED, None, str(e)
+
+
+def _default_media_filename(post_type: PostType) -> str:
+    return {
+        PostType.PHOTO: "photo.jpg",
+        PostType.VIDEO: "video.mp4",
+        PostType.DOCUMENT: "file.bin",
+    }.get(post_type, "file.bin")
 
 
 def _parse_entities(text_entities: str | None) -> list[tl.types.TypeMessageEntity] | None:

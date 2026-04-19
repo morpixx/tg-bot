@@ -48,8 +48,9 @@ class PostRepository:
         post_type: PostType,
         text: str | None = None,
         text_entities: str | None = None,
-        media_file_id: str | None = None,
         media_type: str | None = None,
+        media_bytes: bytes | None = None,
+        media_filename: str | None = None,
     ) -> Post:
         post = Post(
             user_id=user_id,
@@ -57,8 +58,9 @@ class PostRepository:
             type=post_type,
             text=text,
             text_entities=text_entities,
-            media_file_id=media_file_id,
             media_type=media_type,
+            media_bytes=media_bytes,
+            media_filename=media_filename,
         )
         self._session.add(post)
         await self._session.flush()

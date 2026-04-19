@@ -45,7 +45,8 @@ class TestSendPost:
         post.source_message_id = 42
         post.text = "Hello"
         post.text_entities = None
-        post.media_file_id = "FILE123"
+        post.media_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00" if post_type in (PostType.PHOTO, PostType.VIDEO, PostType.DOCUMENT) else None
+        post.media_filename = "asset.bin"
         for k, v in kwargs.items():
             setattr(post, k, v)
         return post
