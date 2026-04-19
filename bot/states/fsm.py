@@ -4,16 +4,18 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class SessionAddQR(StatesGroup):
-    waiting_name = State()
     waiting_scan = State()
     waiting_2fa = State()
 
 
 class SessionAddPhone(StatesGroup):
-    waiting_name = State()
     waiting_phone = State()
     waiting_code = State()
     waiting_2fa = State()
+
+
+class SessionRename(StatesGroup):
+    waiting_name = State()
 
 
 class PostAdd(StatesGroup):

@@ -30,9 +30,20 @@ def sessions_list_kb(sessions: list[TelegramSession]) -> InlineKeyboardMarkup:
 def session_add_method_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📷 QR-код", callback_data="session:add:qr")],
+            [InlineKeyboardButton(text="📷 QR-код / ссылка", callback_data="session:add:qr")],
             [InlineKeyboardButton(text="📞 Номер телефона", callback_data="session:add:phone")],
             [back_button("menu:sessions")],
+        ]
+    )
+
+
+def qr_auth_kb(login_url: str) -> InlineKeyboardMarkup:
+    """QR screen controls: clickable tg://login link + refresh/cancel."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔓 Авторизовать по ссылке", url=login_url)],
+            [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="session:qr:refresh")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="session:qr:cancel")],
         ]
     )
 
@@ -40,7 +51,10 @@ def session_add_method_kb() -> InlineKeyboardMarkup:
 def session_view_kb(session_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Проверить связь", callback_data=f"session:check:{session_id}")],
+            [
+                InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"session:rename:{session_id}"),
+                InlineKeyboardButton(text="🔄 Проверить", callback_data=f"session:check:{session_id}"),
+            ],
             [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"session:delete:{session_id}")],
             [back_button("menu:sessions")],
         ]

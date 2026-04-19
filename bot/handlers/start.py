@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
 
@@ -49,12 +50,37 @@ async def _menu_text(name: str, tg_id: int) -> str:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
     assert message.from_user
+    await state.clear()
     name = message.from_user.full_name or message.from_user.username or "Пользователь"
     is_owner = message.from_user.id == settings.owner_id
     text = await _menu_text(name, message.from_user.id)
     await message.answer(text, reply_markup=main_menu_kb(is_owner=is_owner))
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message, state: FSMContext) -> None:
+    """Universal entry point — works from any FSM state."""
+    assert message.from_user
+    await state.clear()
+    name = message.from_user.full_name or message.from_user.username or "Пользователь"
+    is_owner = message.from_user.id == settings.owner_id
+    text = await _menu_text(name, message.from_user.id)
+    await message.answer(text, reply_markup=main_menu_kb(is_owner=is_owner))
+
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext) -> None:
+    """Abort any in-progress flow and return to main menu."""
+    assert message.from_user
+    current = await state.get_state()
+    await state.clear()
+    name = message.from_user.full_name or message.from_user.username or "Пользователь"
+    is_owner = message.from_user.id == settings.owner_id
+    text = await _menu_text(name, message.from_user.id)
+    prefix = "✅ Действие отменено.\n\n" if current else ""
+    await message.answer(prefix + text, reply_markup=main_menu_kb(is_owner=is_owner))
 
 
 @router.callback_query(F.data == "menu:main")

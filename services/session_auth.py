@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import random
 from dataclasses import dataclass
 
 import qrcode
@@ -29,11 +30,22 @@ class AuthResult:
     error: str | None = None
 
 
-def _make_client(string_session: str = "") -> TelegramClient:
-    return TelegramClient(
-        StringSession(string_session),
-        api=API.TelegramIOS.Generate(),
-    )
+# Rotated in order on RECAPTCHA retries — each generator yields a fresh device
+# fingerprint per call, which is often enough to clear Telegram's soft block.
+_DEVICE_ROTATION = (
+    ("iOS", lambda: API.TelegramIOS.Generate()),
+    ("Android", lambda: API.TelegramAndroid.Generate()),
+    ("Desktop", lambda: API.TelegramDesktop.Generate()),
+)
+
+
+def _make_client(string_session: str = "", device_factory=None) -> TelegramClient:
+    api = device_factory() if device_factory else API.TelegramIOS.Generate()
+    return TelegramClient(StringSession(string_session), api=api)
+
+
+def _is_recaptcha(err: str) -> bool:
+    return "RECAPTCHA" in err or "recaptcha" in err.lower()
 
 
 # ── QR Login ──────────────────────────────────────────────────────────────────
@@ -44,35 +56,52 @@ class QRLoginSession:
     def __init__(self) -> None:
         self._client = _make_client()
         self._qr_login = None
-        self._done = asyncio.Event()
-        self._result: AuthResult | None = None
-        self._password_needed = asyncio.Event()
+        self._wait_task: asyncio.Task | None = None
         self._finalized = False  # guard against double-save on refresh race
 
     async def start(self) -> bytes:
-        """Connect client, start QR login, return QR image bytes."""
+        """Connect client, start QR login, return QR image bytes.
+
+        The wait task is kicked off *before* returning so Telethon's
+        UpdateLoginToken handler is registered before the user can scan.
+        """
         await self._client.connect()
         self._qr_login = await self._client.qr_login()
+        self._wait_task = asyncio.create_task(self._qr_login.wait())
+        # Yield once so the task runs up to its first suspension point,
+        # which is after add_event_handler — no scan can be missed.
+        await asyncio.sleep(0)
         return self._generate_qr_image(self._qr_login.url)
 
-    async def wait_for_scan(self, timeout: float = 30.0) -> str:
-        """
-        Wait for QR scan. Returns 'success', 'password_needed', or 'expired'.
-        Uses Telethon's native timeout so no asyncio.wait_for wrapping is needed —
-        cancellation from an outer task propagates cleanly.
-        """
+    def login_url(self) -> str:
+        """Return the tg://login URL — works as a clickable deeplink."""
+        assert self._qr_login is not None
+        return self._qr_login.url
+
+    async def wait_for_scan(self, timeout: float = 60.0) -> str:
+        """Wait for QR scan. Returns 'success', 'password_needed', or 'expired'."""
+        assert self._wait_task is not None
         try:
-            await self._qr_login.wait(timeout)
+            await asyncio.wait_for(asyncio.shield(self._wait_task), timeout=timeout)
             return "success"
-        except SessionPasswordNeededError:
-            return "password_needed"
         except TimeoutError:
             return "expired"
+        except SessionPasswordNeededError:
+            return "password_needed"
 
     async def refresh_qr(self) -> bytes:
         """Regenerate QR code after expiry."""
-        self._qr_login = await self._qr_login.recreate()
-        return self._generate_qr_image(self._qr_login.url)
+        if self._wait_task and not self._wait_task.done():
+            self._wait_task.cancel()
+            try:
+                await self._wait_task
+            except BaseException:
+                pass
+        # recreate() returns None and mutates self._qr_login._resp in place.
+        await self._qr_login.recreate()
+        self._wait_task = asyncio.create_task(self._qr_login.wait())
+        await asyncio.sleep(0)
+        return self._generate_qr_image(self.login_url())
 
     async def submit_password(self, password: str) -> AuthResult:
         """Submit 2FA password after QR scan."""
@@ -109,6 +138,12 @@ class QRLoginSession:
                 pass
 
     async def cancel(self) -> None:
+        if self._wait_task and not self._wait_task.done():
+            self._wait_task.cancel()
+            try:
+                await self._wait_task
+            except BaseException:
+                pass
         await self._client.disconnect()
 
     @staticmethod
@@ -142,10 +177,10 @@ class PhoneLoginSession:
         Send verification code to phone.
         Returns (success, error_message).
 
-        On RECAPTCHA we transparently retry once with a fresh iOS device
-        fingerprint — opentele2's API.TelegramIOS.Generate() yields a new
-        device each call, and that often clears the soft block without
-        having to drop the user onto the QR path.
+        On RECAPTCHA, rotate through iOS → Android → Desktop device
+        fingerprints with randomized backoff. Each opentele2 generator
+        yields a fresh device per call, so this hits Telegram's captcha
+        heuristics from different angles without falling back to QR.
         """
         self._phone = phone
 
@@ -169,23 +204,26 @@ class PhoneLoginSession:
             seconds = err.split(":", 1)[1]
             return False, f"Слишком много попыток. Подождите {seconds} сек."
 
-        if "RECAPTCHA" in err or "recaptcha" in err.lower():
-            # Rebuild client with a new iOS device fingerprint and retry once.
-            try:
-                await self._client.disconnect()
-            except Exception:
-                pass
-            self._client = _make_client()
-            ok2, err2 = await _attempt()
-            if ok2:
-                return True, ""
-            if "RECAPTCHA" in err2 or "recaptcha" in err2.lower():
-                return False, (
-                    "⚠️ Telegram требует CAPTCHA для этого номера.\n\n"
-                    "Можно: 1) попробовать ещё раз через пару минут, "
-                    "2) использовать другой номер или 3) авторизоваться по <b>QR-коду</b>."
-                )
-            return False, err2
+        if _is_recaptcha(err):
+            for _device_name, factory in _DEVICE_ROTATION:
+                try:
+                    await self._client.disconnect()
+                except Exception:
+                    pass
+                await asyncio.sleep(random.uniform(0.8, 2.2))
+                self._client = _make_client(device_factory=factory)
+                ok_retry, err_retry = await _attempt()
+                if ok_retry:
+                    return True, ""
+                if not _is_recaptcha(err_retry):
+                    return False, err_retry
+                err = err_retry
+            return False, (
+                "⚠️ Telegram требует CAPTCHA для этого номера.\n\n"
+                "Мы попробовали iOS, Android и Desktop-клиенты — не прошло.\n"
+                "Можно: 1) подождать пару минут и повторить, "
+                "2) использовать другой номер или 3) войти по <b>QR-коду</b>."
+            )
 
         return False, err
 

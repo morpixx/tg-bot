@@ -11,17 +11,18 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.keyboards.sessions_kb import (
     phone_retry_kb,
+    qr_auth_kb,
     session_add_method_kb,
     session_confirm_delete_kb,
     session_view_kb,
     sessions_list_kb,
 )
 from bot.keyboards.utils import back_kb
-from bot.states.fsm import SessionAddPhone, SessionAddQR
+from bot.states.fsm import SessionAddPhone, SessionAddQR, SessionRename
 from db.models import User
 from db.repositories.session_repo import SessionRepository
 from db.session import async_session_factory
-from services.session_auth import PhoneLoginSession, QRLoginSession
+from services.session_auth import AuthResult, PhoneLoginSession, QRLoginSession
 from worker.session_pool import SessionPool
 
 router = Router()
@@ -31,6 +32,31 @@ log = structlog.get_logger()
 _qr_sessions: dict[int, QRLoginSession] = {}
 _qr_tasks: dict[int, asyncio.Task] = {}  # type: ignore[type-arg]
 _phone_sessions: dict[int, PhoneLoginSession] = {}
+
+
+def _default_session_name(auth_result: AuthResult) -> str:
+    """Derive a human-readable default name from the auth result."""
+    if auth_result.account_name:
+        return auth_result.account_name
+    if auth_result.account_username:
+        return f"@{auth_result.account_username}"
+    if auth_result.phone:
+        return auth_result.phone
+    return "Новая сессия"
+
+
+def _render_session_view(tg_session) -> str:  # type: ignore[no-untyped-def]
+    premium = "💎 Premium" if tg_session.has_premium else "нет"
+    status = "🟢 Активна" if tg_session.is_active else "🔴 Отключена"
+    return (
+        f"📱 <b>{tg_session.name}</b>\n\n"
+        f"🔌 Статус: {status}\n"
+        f"👤 Аккаунт: {tg_session.account_name or '—'}\n"
+        f"🆔 @{tg_session.account_username or '—'}\n"
+        f"📞 {tg_session.phone or '—'}\n"
+        f"⭐ Premium: {premium}\n"
+        f"🕐 Добавлена: {tg_session.created_at.strftime('%d.%m.%Y %H:%M')}"
+    )
 
 
 # ── Sessions list ─────────────────────────────────────────────────────────────
@@ -44,7 +70,10 @@ async def cb_sessions_list(callback: CallbackQuery, db_user: User) -> None:
     active = sum(1 for s in sessions if s.is_active)
     total = len(sessions)
     text = f"📱 <b>Сессии</b> ({active}/{total} активных)\n\nВыбери сессию или добавь новую:"
-    await callback.message.edit_text(text, reply_markup=sessions_list_kb(sessions))
+    try:
+        await callback.message.edit_text(text, reply_markup=sessions_list_kb(sessions))
+    except Exception:
+        await callback.message.answer(text, reply_markup=sessions_list_kb(sessions))
     await callback.answer()
 
 
@@ -60,19 +89,60 @@ async def cb_session_view(callback: CallbackQuery) -> None:
     if not tg_session:
         await callback.answer("Сессия не найдена", show_alert=True)
         return
-    premium = "💎 Premium" if tg_session.has_premium else "нет"
-    status = "🟢 Активна" if tg_session.is_active else "🔴 Отключена"
-    text = (
-        f"📱 <b>{tg_session.name}</b>\n\n"
-        f"🔌 Статус: {status}\n"
-        f"👤 Аккаунт: {tg_session.account_name or '—'}\n"
-        f"🆔 @{tg_session.account_username or '—'}\n"
-        f"📞 {tg_session.phone or '—'}\n"
-        f"⭐ Premium: {premium}\n"
-        f"🕐 Добавлена: {tg_session.created_at.strftime('%d.%m.%Y %H:%M')}"
-    )
-    await callback.message.edit_text(text, reply_markup=session_view_kb(session_id))
+    try:
+        await callback.message.edit_text(
+            _render_session_view(tg_session), reply_markup=session_view_kb(session_id)
+        )
+    except Exception:
+        await callback.message.answer(
+            _render_session_view(tg_session), reply_markup=session_view_kb(session_id)
+        )
     await callback.answer()
+
+
+# ── Rename session ────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("session:rename:"))
+async def cb_session_rename(callback: CallbackQuery, state: FSMContext) -> None:
+    assert callback.message and callback.data
+    session_id = callback.data.split(":", 2)[2]
+    await state.clear()
+    await state.update_data(rename_session_id=session_id)
+    await callback.message.answer(
+        "✏️ Введи новое название для сессии:",
+        reply_markup=back_kb(f"session:view:{session_id}"),
+    )
+    await state.set_state(SessionRename.waiting_name)
+    await callback.answer()
+
+
+@router.message(SessionRename.waiting_name)
+async def fsm_rename(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Название не может быть пустым. Введи ещё раз:")
+        return
+    if len(name) > 64:
+        await message.answer("Слишком длинное (макс 64 символа). Введи короче:")
+        return
+    data = await state.get_data()
+    session_id = data.get("rename_session_id")
+    await state.clear()
+    if not session_id:
+        await message.answer("❌ Сессия не найдена.", reply_markup=back_kb("menu:sessions"))
+        return
+    async with async_session_factory() as db_session:
+        async with db_session.begin():
+            repo = SessionRepository(db_session)
+            await repo.update(uuid.UUID(session_id), name=name)
+    async with async_session_factory() as db_session:
+        repo = SessionRepository(db_session)
+        tg_session = await repo.get(uuid.UUID(session_id))
+    assert tg_session
+    await message.answer(
+        f"✅ Переименовано.\n\n{_render_session_view(tg_session)}",
+        reply_markup=session_view_kb(session_id),
+    )
 
 
 # ── Add session — method selection ────────────────────────────────────────────
@@ -91,25 +161,11 @@ async def cb_session_add(callback: CallbackQuery, state: FSMContext) -> None:
 # ── QR Login flow ─────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "session:add:qr")
-async def cb_session_add_qr(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_session_add_qr(callback: CallbackQuery, state: FSMContext, db_user: User) -> None:
     assert callback.message
     await state.clear()
-    await callback.message.edit_text(
-        "📷 <b>QR-авторизация</b>\n\nВведи название для этой сессии (например: «Основной аккаунт»):"
-    )
-    await state.set_state(SessionAddQR.waiting_name)
-    await callback.answer()
 
-
-@router.message(SessionAddQR.waiting_name)
-async def fsm_qr_name(message: Message, state: FSMContext, db_user: User) -> None:
-    name = (message.text or "").strip()
-    if not name:
-        await message.answer("Название не может быть пустым. Введи ещё раз:")
-        return
-    await state.update_data(session_name=name)
-
-    status_msg = await message.answer("⏳ Генерирую QR-код...")
+    status_msg = await callback.message.answer("⏳ Генерирую QR-код...")
     auth = QRLoginSession()
     _qr_sessions[db_user.tg_id] = auth
 
@@ -119,31 +175,28 @@ async def fsm_qr_name(message: Message, state: FSMContext, db_user: User) -> Non
         log.error("QR start failed", user_id=db_user.tg_id, error=str(e))
         _qr_sessions.pop(db_user.tg_id, None)
         await status_msg.edit_text(f"❌ Ошибка: {e}", reply_markup=back_kb("menu:sessions"))
-        await state.clear()
         return
 
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    login_url = auth.login_url()
     photo = BufferedInputFile(qr_bytes, filename="qr.png")
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="session:qr:refresh")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="session:qr:cancel")],
-        ]
-    )
     await status_msg.delete()
-    await message.answer_photo(
+    await callback.message.answer_photo(
         photo,
         caption=(
-            "📷 <b>Отсканируй QR-код</b>\n\n"
-            "Открой Telegram → <b>Настройки</b> → <b>Устройства</b> → <b>Подключить устройство</b>\n\n"
-            "QR-код действителен 1 минуту."
+            "📷 <b>Авторизация сессии</b>\n\n"
+            "Два способа:\n"
+            "• <b>Отсканируй QR-код</b> камерой Telegram (Настройки → Устройства → Подключить устройство)\n"
+            "• <b>Или нажми кнопку ниже</b> на том аккаунте, который хочешь добавить — "
+            "ссылку можно переслать куда угодно\n\n"
+            "⏳ Ссылка/QR действительны 1 минуту."
         ),
-        reply_markup=kb,
+        reply_markup=qr_auth_kb(login_url),
     )
     await state.set_state(SessionAddQR.waiting_scan)
+    await callback.answer()
 
-    user_id = message.from_user.id  # type: ignore[union-attr]
-    chat_id = message.chat.id
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
     task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
     _qr_tasks[user_id] = task
 
@@ -179,7 +232,7 @@ async def _wait_for_qr_scan(user_id: int, chat_id: int, state: FSMContext) -> No
         _qr_sessions.pop(user_id, None)
         _qr_tasks.pop(user_id, None)
         try:
-            await bot.send_message(chat_id, "✅ Отсканировано! Сохраняю сессию...")
+            await bot.send_message(chat_id, "✅ Авторизовано! Сохраняю сессию...")
         except Exception:
             pass
         try:
@@ -222,21 +275,18 @@ async def cb_qr_refresh(callback: CallbackQuery, state: FSMContext, db_user: Use
     if old_task and not old_task.done():
         old_task.cancel()
 
+    login_url = auth.login_url()
     photo = BufferedInputFile(qr_bytes, filename="qr.png")
-    await callback.message.delete()
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить QR", callback_data="session:qr:refresh")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="session:qr:cancel")],
-        ]
-    )
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
     assert callback.bot
     await callback.bot.send_photo(
         callback.from_user.id,
         photo,
-        caption="🔄 QR обновлён. Отсканируй снова.",
-        reply_markup=kb,
+        caption="🔄 QR обновлён. Отсканируй или нажми кнопку.",
+        reply_markup=qr_auth_kb(login_url),
     )
 
     task = asyncio.create_task(_wait_for_qr_scan(user_id, chat_id, state))
@@ -257,7 +307,7 @@ async def cb_qr_cancel(callback: CallbackQuery, state: FSMContext, db_user: User
         await auth.cancel()
     await state.clear()
     try:
-        await callback.message.edit_caption("❌ Авторизация отменена.")
+        await callback.message.edit_caption(caption="❌ Авторизация отменена.")
     except Exception:
         await callback.message.answer("❌ Авторизация отменена.")
     await callback.answer()
@@ -289,32 +339,21 @@ async def fsm_qr_2fa(message: Message, state: FSMContext, db_user: User) -> None
 async def cb_session_add_phone(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.message
     await state.clear()
+    text = "📞 <b>Авторизация по номеру</b>\n\nВведи номер в формате <code>+7XXXXXXXXXX</code>:"
     try:
-        await callback.message.edit_text(
-            "📞 <b>Авторизация по номеру</b>\n\nВведи название для этой сессии:"
-        )
+        await callback.message.edit_text(text, reply_markup=back_kb("menu:sessions"))
     except Exception:
-        await callback.message.answer(
-            "📞 <b>Авторизация по номеру</b>\n\nВведи название для этой сессии:"
-        )
-    await state.set_state(SessionAddPhone.waiting_name)
-    await callback.answer()
-
-
-@router.message(SessionAddPhone.waiting_name)
-async def fsm_phone_name(message: Message, state: FSMContext) -> None:
-    name = (message.text or "").strip()
-    if not name:
-        await message.answer("Название не может быть пустым:")
-        return
-    await state.update_data(session_name=name)
-    await message.answer("📞 Введи номер телефона в формате <code>+7XXXXXXXXXX</code>:")
+        await callback.message.answer(text, reply_markup=back_kb("menu:sessions"))
     await state.set_state(SessionAddPhone.waiting_phone)
+    await callback.answer()
 
 
 @router.message(SessionAddPhone.waiting_phone)
 async def fsm_phone_number(message: Message, state: FSMContext, db_user: User) -> None:
     phone = (message.text or "").strip()
+    if not phone.startswith("+") or len(phone) < 8:
+        await message.answer("Неверный формат. Нужно <code>+7XXXXXXXXXX</code>:")
+        return
     auth = PhoneLoginSession()
     _phone_sessions[db_user.tg_id] = auth
 
@@ -402,18 +441,9 @@ async def cb_session_check(callback: CallbackQuery) -> None:
         tg_session = await repo.get(uuid.UUID(session_id))
 
     assert tg_session
-    premium = "💎 Premium" if tg_session.has_premium else "нет"
-    status = "🟢 Активна" if tg_session.is_active else "🔴 Отключена"
-    text = (
-        f"📱 <b>{tg_session.name}</b>\n\n"
-        f"🔌 Статус: {status}\n"
-        f"👤 Аккаунт: {tg_session.account_name or '—'}\n"
-        f"🆔 @{tg_session.account_username or '—'}\n"
-        f"📞 {tg_session.phone or '—'}\n"
-        f"⭐ Premium: {premium}\n"
-        f"🕐 Добавлена: {tg_session.created_at.strftime('%d.%m.%Y %H:%M')}"
+    await callback.message.edit_text(
+        _render_session_view(tg_session), reply_markup=session_view_kb(session_id)
     )
-    await callback.message.edit_text(text, reply_markup=session_view_kb(session_id))
 
 
 # ── Delete session ────────────────────────────────────────────────────────────
@@ -464,11 +494,6 @@ async def _save_session(
             log.exception("Failed to deliver session reply", user_id=user_id)
 
     try:
-        data = await state.get_data()
-    except Exception:
-        data = {}
-    session_name = data.get("session_name", "Без названия")
-    try:
         await state.clear()
     except Exception:
         pass
@@ -477,6 +502,8 @@ async def _save_session(
         log.warning("Session auth failed", user_id=user_id, error=auth_result.error)
         await _reply(f"❌ Ошибка авторизации: {auth_result.error}")
         return
+
+    session_name = _default_session_name(auth_result)
 
     try:
         async with async_session_factory() as db_session:
@@ -501,7 +528,8 @@ async def _save_session(
         f"✅ <b>Сессия добавлена!</b>\n\n"
         f"📱 {session_name}\n"
         f"👤 {auth_result.account_name or '—'}\n"
-        f"⭐ Premium: {premium}"
+        f"⭐ Premium: {premium}\n\n"
+        f"<i>Переименовать можно в карточке сессии.</i>"
     )
     log.info("Session saved", user_id=user_id, name=session_name)
     await _reply(text)

@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 import structlog
+from aiogram.types import BotCommand
 
 from bot.core.bot import bot
 from bot.core.config import settings
@@ -25,6 +26,15 @@ def setup_logging() -> None:
     )
 
 
+async def _register_commands() -> None:
+    """Populate the Telegram hamburger-menu commands."""
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🚀 Запустить бота"),
+        BotCommand(command="menu", description="🏠 Главное меню"),
+        BotCommand(command="cancel", description="❌ Отменить текущее действие"),
+    ])
+
+
 async def main() -> None:
     setup_logging()
     log = structlog.get_logger()
@@ -32,6 +42,7 @@ async def main() -> None:
 
     dp = create_dispatcher()
     await bot.delete_webhook(drop_pending_updates=True)
+    await _register_commands()
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
