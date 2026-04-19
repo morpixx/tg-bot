@@ -102,12 +102,12 @@ services/
 
 ## Callback data conventions
 
-All callback_data strings follow `scope:action[:id]` format:
+All callback_data strings follow `scope:action[:id]` format. Telegram caps callback_data at 64 bytes, so keep prefixes short when they carry a UUID (36 chars) — especially two UUIDs.
 - `menu:*` — main menu navigation
 - `gs:field` — global settings edit (settings.py)
-- `csetting:field:campaign_id` — campaign settings edit
+- `cs:code:campaign_id` — campaign settings edit. `code` is the 2-letter field code from `SETTING_CODES` in `campaigns_kb.py` (decoded via `SETTING_FIELDS`).
 - `campaign:action:id` — campaign control (view, start, pause, stop, restart, delete, settings, offsets, progress, stats, test)
-- `campaign:offset:edit:campaign_id:session_id` — session offset edit
+- `coe:session_id` — session offset edit. `campaign_id` is stashed in FSM state when the offsets screen is rendered; handler reads it from there instead of embedding two UUIDs in the callback.
 
 ## Environment variables
 

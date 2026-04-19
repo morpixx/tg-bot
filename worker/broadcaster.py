@@ -227,7 +227,7 @@ class Broadcaster:
         self,
         client: TelegramClient,
         post: Post,
-        chat_id: int,
+        chat_id: int | str,
         forward_mode: bool,
         cached_source_msg=None,  # type: ignore[no-untyped-def]
     ) -> tuple[BroadcastStatus, int | None, str | None]:

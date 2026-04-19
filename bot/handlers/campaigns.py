@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.keyboards.campaigns_kb import (
+    SETTING_FIELDS,
     campaign_settings_kb,
     campaign_view_kb,
     campaigns_list_kb,
@@ -341,12 +342,18 @@ async def cb_campaign_settings(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("csetting:"))
+@router.callback_query(F.data.startswith("cs:"))
 async def cb_setting_edit(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.data and callback.message
     parts = callback.data.split(":")
-    field = parts[1]
-    campaign_id = parts[2]
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    code, campaign_id = parts[1], parts[2]
+    field = SETTING_FIELDS.get(code)
+    if not field:
+        await callback.answer("Неизвестный параметр", show_alert=True)
+        return
 
     # Toggle booleans inline
     if field in _TOGGLE_FIELDS:
@@ -552,19 +559,24 @@ async def cb_campaign_test(callback: CallbackQuery, db_user: User) -> None:
                 pass
 
         broadcaster = Broadcaster(SessionPool())
+        # Send to the session account's own Saved Messages — it's the only
+        # entity Telethon can always resolve without a cached access_hash.
         status, msg_id, error = await broadcaster._send_post(
             client=client,
             post=campaign.post,
-            chat_id=db_user.tg_id,
+            chat_id="me",
             forward_mode=campaign.settings.forward_mode,
             cached_source_msg=cached_source_msg,
         )
         await client.disconnect()
 
+        session_label = tg_session.account_name or tg_session.name
         if status.value == "success":
             await callback.bot.send_message(
                 db_user.tg_id,
-                "✅ <b>Тест прошёл успешно!</b> Сообщение выше — это твой пост как он будет выглядеть.",
+                "✅ <b>Тест прошёл успешно!</b>\n\n"
+                f"Пост отправлен в <b>Saved Messages</b> аккаунта «{session_label}» — "
+                "открой его в Telegram, чтобы увидеть, как будет выглядеть рассылка.",
             )
         else:
             await callback.bot.send_message(
@@ -619,7 +631,7 @@ async def cb_campaign_progress(callback: CallbackQuery) -> None:
 # ── Session Offsets ────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("campaign:offsets:"))
-async def cb_campaign_offsets(callback: CallbackQuery) -> None:
+async def cb_campaign_offsets(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.message and callback.data
     campaign_id = callback.data.split(":", 2)[2]
     async with async_session_factory() as session:
@@ -629,6 +641,8 @@ async def cb_campaign_offsets(callback: CallbackQuery) -> None:
         await callback.answer("Кампания не найдена", show_alert=True)
         return
 
+    # Stash campaign_id so the shorter coe:<session_id> callback can find it.
+    await state.update_data(offset_campaign_id=campaign_id)
     await callback.message.edit_text(
         f"⏱ <b>Офсеты сессий</b> · <i>{campaign.name}</i>\n\n"
         "Задай задержку для каждой сессии от момента старта кампании, "
@@ -638,12 +652,15 @@ async def cb_campaign_offsets(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("campaign:offset:edit:"))
+@router.callback_query(F.data.startswith("coe:"))
 async def cb_offset_edit(callback: CallbackQuery, state: FSMContext) -> None:
     assert callback.message and callback.data
-    parts = callback.data.split(":")
-    campaign_id = parts[3]
-    session_id = parts[4]
+    session_id = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    campaign_id = data.get("offset_campaign_id")
+    if not campaign_id:
+        await callback.answer("Открой список офсетов заново", show_alert=True)
+        return
 
     await state.update_data(offset_campaign_id=campaign_id, offset_session_id=session_id)
     await callback.message.edit_text(

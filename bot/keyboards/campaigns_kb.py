@@ -13,6 +13,22 @@ _STATUS_EMOJI = {
     CampaignStatus.COMPLETED: "✅",
 }
 
+# Short codes for campaign-settings fields — keeps callback_data under the 64-byte Telegram limit.
+SETTING_CODES: dict[str, str] = {
+    "delay_between_chats": "dc",
+    "randomize_delay": "rd",
+    "randomize_min": "rn",
+    "randomize_max": "rx",
+    "delay_between_cycles": "dy",
+    "cycle_delay_randomize": "cr",
+    "cycle_delay_min": "cn",
+    "cycle_delay_max": "cx",
+    "max_cycles": "mc",
+    "forward_mode": "fm",
+    "shuffle_after_cycle": "sh",
+}
+SETTING_FIELDS: dict[str, str] = {code: field for field, code in SETTING_CODES.items()}
+
 
 def campaigns_list_kb(campaigns: list[Campaign]) -> InlineKeyboardMarkup:
     rows = []
@@ -75,51 +91,54 @@ def campaign_settings_kb(campaign_id: str, cfg: CampaignSettings) -> InlineKeybo
     max_c = str(cfg.max_cycles) if cfg.max_cycles else "∞"
     cycle_rand = f"{'✅' if cfg.cycle_delay_randomize else '❌'} Рандом между циклами"
 
+    def cb(field: str) -> str:
+        return f"cs:{SETTING_CODES[field]}:{campaign_id}"
+
     rows = [
         # ── Задержка между чатами ──
         [InlineKeyboardButton(
             text=f"⏱ Задержка: {cfg.delay_between_chats} с",
-            callback_data=f"csetting:delay_between_chats:{campaign_id}",
+            callback_data=cb("delay_between_chats"),
         )],
-        [InlineKeyboardButton(text=rand, callback_data=f"csetting:randomize_delay:{campaign_id}")],
+        [InlineKeyboardButton(text=rand, callback_data=cb("randomize_delay"))],
     ]
 
     if cfg.randomize_delay:
         rows.append([InlineKeyboardButton(
             text=f"   ↳ мин: {cfg.randomize_min} с",
-            callback_data=f"csetting:randomize_min:{campaign_id}",
+            callback_data=cb("randomize_min"),
         )])
         rows.append([InlineKeyboardButton(
             text=f"   ↳ макс: {cfg.randomize_max} с",
-            callback_data=f"csetting:randomize_max:{campaign_id}",
+            callback_data=cb("randomize_max"),
         )])
 
     rows += [
         # ── Задержка между циклами ──
         [InlineKeyboardButton(
             text=f"🔄 Между циклами: {cfg.delay_between_cycles} с",
-            callback_data=f"csetting:delay_between_cycles:{campaign_id}",
+            callback_data=cb("delay_between_cycles"),
         )],
-        [InlineKeyboardButton(text=cycle_rand, callback_data=f"csetting:cycle_delay_randomize:{campaign_id}")],
+        [InlineKeyboardButton(text=cycle_rand, callback_data=cb("cycle_delay_randomize"))],
     ]
 
     if cfg.cycle_delay_randomize:
         rows.append([InlineKeyboardButton(
             text=f"   ↳ мин: {cfg.cycle_delay_min} с",
-            callback_data=f"csetting:cycle_delay_min:{campaign_id}",
+            callback_data=cb("cycle_delay_min"),
         )])
         rows.append([InlineKeyboardButton(
             text=f"   ↳ макс: {cfg.cycle_delay_max} с",
-            callback_data=f"csetting:cycle_delay_max:{campaign_id}",
+            callback_data=cb("cycle_delay_max"),
         )])
 
     rows += [
-        [InlineKeyboardButton(text=shuffle, callback_data=f"csetting:shuffle_after_cycle:{campaign_id}")],
+        [InlineKeyboardButton(text=shuffle, callback_data=cb("shuffle_after_cycle"))],
         [InlineKeyboardButton(
             text=f"🔁 Макс. циклов: {max_c}",
-            callback_data=f"csetting:max_cycles:{campaign_id}",
+            callback_data=cb("max_cycles"),
         )],
-        [InlineKeyboardButton(text=mode, callback_data=f"csetting:forward_mode:{campaign_id}")],
+        [InlineKeyboardButton(text=mode, callback_data=cb("forward_mode"))],
         [back_button(f"campaign:view:{campaign_id}")],
     ]
 
@@ -138,7 +157,7 @@ def session_offsets_kb(
         offset_label = f"{cs.delay_offset_seconds} с" if cs.delay_offset_seconds else "сразу"
         rows.append([InlineKeyboardButton(
             text=f"📱 {name}{premium}  →  ⏱ {offset_label}",
-            callback_data=f"campaign:offset:edit:{campaign_id}:{cs.session_id}",
+            callback_data=f"coe:{cs.session_id}",
         )])
     rows.append([back_button(f"campaign:view:{campaign_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
