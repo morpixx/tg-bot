@@ -33,12 +33,16 @@ def create_dispatcher() -> Dispatcher:
     # Admin router first — IsOwner filter bypasses subscription gate
     dp.include_router(admin.router)
 
-    # Operator routers
+    # Operator routers.
+    # campaigns.router MUST come before posts.router: the campaign-create wizard
+    # has a state-filtered `post:view:` handler (for picking a post inside the
+    # flow). If posts.router were checked first, its unfiltered `post:view:`
+    # handler would swallow the click and break the flow.
     dp.include_router(start.router)
     dp.include_router(sessions.router)
+    dp.include_router(campaigns.router)
     dp.include_router(posts.router)
     dp.include_router(chats.router)
-    dp.include_router(campaigns.router)
     dp.include_router(settings_handlers.router)
     dp.include_router(stats.router)
 
