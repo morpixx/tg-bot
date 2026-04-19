@@ -8,6 +8,7 @@ import structlog
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from telethon.errors import FloodWaitError
 
 from bot.keyboards.sessions_kb import (
     phone_retry_kb,
@@ -32,6 +33,31 @@ log = structlog.get_logger()
 _qr_sessions: dict[int, QRLoginSession] = {}
 _qr_tasks: dict[int, asyncio.Task] = {}  # type: ignore[type-arg]
 _phone_sessions: dict[int, PhoneLoginSession] = {}
+
+
+def _format_wait(seconds_str: str) -> str:
+    """Turn a seconds count into a human label, e.g. '1 ч 0 мин'."""
+    try:
+        seconds = int(seconds_str)
+    except (TypeError, ValueError):
+        return f"{seconds_str} сек"
+    if seconds >= 3600:
+        hours, rem = divmod(seconds, 3600)
+        minutes = rem // 60
+        return f"{hours} ч {minutes} мин"
+    if seconds >= 60:
+        minutes, rem = divmod(seconds, 60)
+        return f"{minutes} мин {rem} сек"
+    return f"{seconds} сек"
+
+
+def _flood_wait_text(seconds_str: str) -> str:
+    return (
+        "⏳ <b>Telegram ограничил QR-вход с этого IP.</b>\n\n"
+        f"Нужно подождать примерно <b>{_format_wait(seconds_str)}</b>.\n\n"
+        "Пока лимит не снимется, попробуй <b>вход по номеру</b> — "
+        "обычно он работает отдельно от QR."
+    )
 
 
 def _default_session_name(auth_result: AuthResult) -> str:
@@ -226,6 +252,14 @@ async def cb_session_add_qr(callback: CallbackQuery, state: FSMContext, db_user:
 
     try:
         qr_bytes = await auth.start(on_refresh=_on_refresh)
+    except FloodWaitError as e:
+        log.warning("QR start flood-waited", user_id=user_id, seconds=e.seconds)
+        _qr_sessions.pop(user_id, None)
+        await status_msg.edit_text(
+            _flood_wait_text(str(e.seconds)),
+            reply_markup=phone_retry_kb(),
+        )
+        return
     except Exception as e:
         log.error("QR start failed", user_id=user_id, error=str(e))
         _qr_sessions.pop(user_id, None)
@@ -295,6 +329,17 @@ async def _watch_qr_auth(user_id: int, chat_id: int, state: FSMContext) -> None:
         return
 
     if outcome == "cancelled":
+        return
+
+    if outcome == "flood_wait":
+        seconds_str = auth.error or "?"
+        log.warning("QR flood-waited mid-flow", user_id=user_id, seconds=seconds_str)
+        await _cleanup_after_flow(user_id, state)
+        await bot.send_message(
+            chat_id,
+            _flood_wait_text(seconds_str),
+            reply_markup=phone_retry_kb(),
+        )
         return
 
     # error

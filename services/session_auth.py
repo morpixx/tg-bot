@@ -71,6 +71,7 @@ _OUTCOME_PASSWORD_NEEDED = "password_needed"
 _OUTCOME_TIMEOUT = "timeout"
 _OUTCOME_ERROR = "error"
 _OUTCOME_CANCELLED = "cancelled"
+_OUTCOME_FLOOD_WAIT = "flood_wait"
 
 RefreshCallback = Callable[[bytes, str], Awaitable[None]]
 
@@ -109,7 +110,11 @@ class QRLoginSession:
     # ── Public API ────────────────────────────────────────────────────────
 
     async def start(self, on_refresh: RefreshCallback) -> bytes:
-        """Connect, request first token, launch the background auth loop."""
+        """Connect, request first token, launch the background auth loop.
+
+        Raises FloodWaitError if Telegram rate-limits the initial
+        ExportLoginToken call — handler should surface the wait time.
+        """
         self._on_refresh = on_refresh
         await self._client.connect()
         # Block telethon's update dispatcher from calling get_me() on our
@@ -201,6 +206,12 @@ class QRLoginSession:
                 except asyncio.CancelledError:
                     self._finish(_OUTCOME_CANCELLED)
                     return
+                except FloodWaitError as e:
+                    # Telegram rate-limited ExportLoginToken / confirm call.
+                    # Nothing we can do client-side — surface the wait time.
+                    self._error = str(e.seconds)
+                    self._finish(_OUTCOME_FLOOD_WAIT)
+                    return
                 except TimeoutError:
                     # Fallback: maybe the update fired but our handler missed it.
                     if await self._safely_is_authorized():
@@ -209,6 +220,10 @@ class QRLoginSession:
                     # Genuine token expiry — recreate and keep looping.
                     try:
                         await self._qr_login.recreate()
+                    except FloodWaitError as e:
+                        self._error = str(e.seconds)
+                        self._finish(_OUTCOME_FLOOD_WAIT)
+                        return
                     except Exception as e:
                         log.exception("qr recreate failed")
                         self._error = str(e)
