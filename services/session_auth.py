@@ -112,6 +112,18 @@ class QRLoginSession:
         """Connect, request first token, launch the background auth loop."""
         self._on_refresh = on_refresh
         await self._client.connect()
+        # Block telethon's update dispatcher from calling get_me() on our
+        # unauthorized client. Telegram pushes UpdateLoginToken during QR auth;
+        # telethon's _dispatch_update then runs `if not self_id: get_me()`,
+        # which on an unauthorized client hits GetUsersRequest → FloodWait(3600s).
+        # receive_updates=False doesn't stop this: Telegram still sends the
+        # update and the internal update loop still dispatches it.
+        # By seeding self_id with a placeholder we short-circuit that branch.
+        # _on_login() overwrites it with the real user.id once the QR is imported.
+        try:
+            self._client._mb_entity_cache.self_id = -1
+        except Exception:
+            log.warning("could not seed placeholder self_id; FloodWait risk remains")
         self._qr_login = await self._client.qr_login()
         self._loop_task = asyncio.create_task(self._run_loop())
         # Yield so the loop reaches its first await (handler registered inside
