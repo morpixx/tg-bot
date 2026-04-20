@@ -270,6 +270,32 @@ class Broadcaster:
                 )
                 msg_id = result.id
 
+            elif post.type == PostType.MEDIA_GROUP:
+                items = sorted(post.media_items, key=lambda x: x.position)
+                if not items:
+                    return BroadcastStatus.SKIPPED, None, "Album has no items — recreate the post"
+                entities = _parse_entities(post.text_entities)
+                files = []
+                force_doc_flags = []
+                for item in items:
+                    b = io.BytesIO(item.media_bytes)
+                    b.name = item.media_filename or _default_media_filename_for_str(item.media_type)
+                    files.append(b)
+                    force_doc_flags.append(item.media_type == "document")
+                # Telethon treats force_document as a single bool for the whole
+                # batch. If *any* item is a document, we can't mix — fall back to
+                # sending everything as documents so nothing disappears.
+                force_document = any(force_doc_flags)
+                result = await client.send_file(
+                    entity=chat_id,
+                    file=files,
+                    caption=post.text or "",
+                    formatting_entities=entities,
+                    force_document=force_document,
+                )
+                first_msg = result[0] if isinstance(result, list) else result
+                msg_id = first_msg.id if first_msg else None
+
             else:
                 # Text post
                 entities = _parse_entities(post.text_entities)
@@ -302,6 +328,14 @@ def _default_media_filename(post_type: PostType) -> str:
         PostType.VIDEO: "video.mp4",
         PostType.DOCUMENT: "file.bin",
     }.get(post_type, "file.bin")
+
+
+def _default_media_filename_for_str(media_type: str) -> str:
+    return {
+        "photo": "photo.jpg",
+        "video": "video.mp4",
+        "document": "file.bin",
+    }.get(media_type, "file.bin")
 
 
 def _parse_entities(text_entities: str | None) -> list[tl.types.TypeMessageEntity] | None:

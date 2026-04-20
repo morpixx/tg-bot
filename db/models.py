@@ -123,6 +123,28 @@ class Post(Base):
     # passive_deletes lets the DB's ON DELETE RESTRICT fire instead of SQLAlchemy
     # trying to SET NULL on campaign.post_id (which is NOT NULL and would violate).
     campaigns: Mapped[list[Campaign]] = relationship(back_populates="post", passive_deletes=True)
+    # For MEDIA_GROUP posts — ordered list of album items. Empty for other types.
+    media_items: Mapped[list[PostMediaItem]] = relationship(
+        back_populates="post",
+        cascade="all, delete-orphan",
+        order_by="PostMediaItem.position",
+    )
+
+
+class PostMediaItem(Base):
+    """One item of a media-group (album) post."""
+    __tablename__ = "post_media_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("posts.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    media_type: Mapped[str] = mapped_column(String(32))  # photo/video/document
+    media_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    media_filename: Mapped[str | None] = mapped_column(String(256))
+
+    post: Mapped[Post] = relationship(back_populates="media_items")
 
 
 class TargetChat(Base):

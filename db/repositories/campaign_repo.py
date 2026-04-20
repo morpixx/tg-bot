@@ -12,6 +12,7 @@ from db.models import (
     CampaignSession,
     CampaignSettings,
     CampaignStatus,
+    Post,
 )
 
 
@@ -29,7 +30,7 @@ class CampaignRepository:
                 selectinload(Campaign.settings),
                 selectinload(Campaign.campaign_sessions).selectinload(CampaignSession.session),
                 selectinload(Campaign.campaign_chats).selectinload(CampaignChat.chat),
-                selectinload(Campaign.post),
+                selectinload(Campaign.post).selectinload(Post.media_items),
             )
         )
         return result.scalar_one_or_none()
@@ -51,7 +52,7 @@ class CampaignRepository:
                 selectinload(Campaign.settings),
                 selectinload(Campaign.campaign_sessions).selectinload(CampaignSession.session),
                 selectinload(Campaign.campaign_chats).selectinload(CampaignChat.chat),
-                selectinload(Campaign.post),
+                selectinload(Campaign.post).selectinload(Post.media_items),
             )
         )
         return list(result.scalars().all())
