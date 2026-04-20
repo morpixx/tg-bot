@@ -176,10 +176,14 @@ class Broadcaster:
             if _stop_signals.get(campaign.id):
                 break
 
+            # Prefer username — Telethon can ResolveUsername even when the
+            # chat isn't in the session's dialog cache. Numeric id only works
+            # when the account is a member AND iter_dialogs has cached it.
+            entity: int | str = chat.username or chat.chat_id
             status, message_id, error = await self._send_post(
                 client=client,
                 post=campaign.post,
-                chat_id=chat.chat_id,
+                chat_id=entity,
                 forward_mode=cfg.forward_mode,
                 cached_source_msg=cached_source_msg,
             )

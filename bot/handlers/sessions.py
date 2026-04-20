@@ -6,6 +6,7 @@ from typing import Any
 
 import structlog
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from telethon.errors import FloodWaitError
@@ -576,9 +577,15 @@ async def cb_session_check(callback: CallbackQuery) -> None:
         tg_session = await repo.get(uuid.UUID(session_id))
 
     assert tg_session
-    await callback.message.edit_text(
-        _render_session_view(tg_session), reply_markup=session_view_kb(session_id)
-    )
+    # Re-editing with identical content raises "message is not modified".
+    # Harmless on a health-check that returned the same state — swallow it.
+    try:
+        await callback.message.edit_text(
+            _render_session_view(tg_session), reply_markup=session_view_kb(session_id)
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
 
 
 # ── Delete session ────────────────────────────────────────────────────────────

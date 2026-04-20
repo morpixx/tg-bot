@@ -45,10 +45,10 @@ class SessionPool:
             # StringSession doesn't persist entity cache. Without a warm cache,
             # `send_message(chat_id)` fails with "Could not find the input entity
             # for PeerChannel" because Telethon has no access_hash to build an
-            # InputPeerChannel. Iterating dialogs populates the in-memory cache
-            # for the lifetime of this client.
+            # InputPeerChannel. Iterating ALL dialogs populates the in-memory
+            # cache so any chat the account is a member of becomes resolvable.
             try:
-                async for _ in client.iter_dialogs(limit=500):
+                async for _ in client.iter_dialogs(limit=None):
                     pass
             except Exception as e:
                 log.warning("Dialog prewarm failed", session_id=str(session_id), error=str(e))
