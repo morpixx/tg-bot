@@ -21,6 +21,11 @@ from db.session import async_session_factory
 
 router = Router()
 
+# Media bytes can't travel through Redis FSM (JSON-serialized). Stash them
+# in-process between the "upload media" and "give it a title" steps, keyed
+# by user id. Cleared on completion or when overwritten by a new flow.
+_pending_media: dict[int, dict] = {}
+
 
 @router.callback_query(F.data == "menu:posts")
 async def cb_posts_list(callback: CallbackQuery, db_user: User) -> None:
@@ -172,6 +177,8 @@ async def cb_post_manual_type(callback: CallbackQuery, state: FSMContext) -> Non
 @router.message(PostAdd.waiting_manual_content)
 async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
     import json
+    assert message.from_user
+    user_id = message.from_user.id
     data = await state.get_data()
     post_type = data.get("post_type", "text")
 
@@ -183,11 +190,11 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
         entities_json = None
         if message.entities:
             entities_json = json.dumps([e.model_dump() for e in message.entities])
+        _pending_media.pop(user_id, None)
         await state.update_data(
             text=message.text,
             text_entities=entities_json,
             media_type=None,
-            media_bytes=None,
             media_filename=None,
         )
 
@@ -226,11 +233,12 @@ async def fsm_post_manual_content(message: Message, state: FSMContext) -> None:
             pass
 
         filename = getattr(media, "file_name", None) or _default_filename(post_type)
+        # Keep bytes off FSM (Redis/JSON can't serialize them); stash in-process.
+        _pending_media[user_id] = {"bytes": media_bytes, "filename": filename}
         await state.update_data(
             text=caption,
             text_entities=entities_json,
             media_type=post_type,
-            media_bytes=media_bytes,
             media_filename=filename,
         )
 
@@ -253,8 +261,10 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
         await message.answer("Название не может быть пустым:")
         return
 
+    assert message.from_user
     data = await state.get_data()
     post_type_str = data.get("post_type", "text")
+    pending = _pending_media.pop(message.from_user.id, None)
     await state.clear()
 
     async with async_session_factory() as session:
@@ -275,8 +285,8 @@ async def fsm_post_title(message: Message, state: FSMContext, db_user: User) -> 
                     text=data.get("text"),
                     text_entities=data.get("text_entities"),
                     media_type=data.get("media_type"),
-                    media_bytes=data.get("media_bytes"),
-                    media_filename=data.get("media_filename"),
+                    media_bytes=(pending or {}).get("bytes"),
+                    media_filename=data.get("media_filename") or (pending or {}).get("filename"),
                 )
 
     await message.answer(

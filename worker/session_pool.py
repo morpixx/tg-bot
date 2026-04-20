@@ -42,6 +42,16 @@ class SessionPool:
                 log.warning("Session not authorized", session_id=str(session_id), name=tg_session.name)
                 await client.disconnect()
                 return None
+            # StringSession doesn't persist entity cache. Without a warm cache,
+            # `send_message(chat_id)` fails with "Could not find the input entity
+            # for PeerChannel" because Telethon has no access_hash to build an
+            # InputPeerChannel. Iterating dialogs populates the in-memory cache
+            # for the lifetime of this client.
+            try:
+                async for _ in client.iter_dialogs(limit=500):
+                    pass
+            except Exception as e:
+                log.warning("Dialog prewarm failed", session_id=str(session_id), error=str(e))
             self._clients[session_id] = client
             log.info("Session connected", session_id=str(session_id), name=tg_session.name)
             return client
